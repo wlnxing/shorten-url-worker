@@ -1,5 +1,49 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
+import { cloneVNode, computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
+import type { VNode } from 'vue';
+import Alert from 'ant-design-vue/es/alert';
+import Button from 'ant-design-vue/es/button';
+import ConfigProvider from 'ant-design-vue/es/config-provider';
+import Input from 'ant-design-vue/es/input';
+import Modal from 'ant-design-vue/es/modal';
+import Pagination from 'ant-design-vue/es/pagination';
+import Skeleton from 'ant-design-vue/es/skeleton';
+import Spin from 'ant-design-vue/es/spin';
+import Switch from 'ant-design-vue/es/switch';
+import Tag from 'ant-design-vue/es/tag';
+import Tooltip from 'ant-design-vue/es/tooltip';
+import zhCN from 'ant-design-vue/es/locale/zh_CN';
+import {
+  AppstoreOutlined,
+  ArrowRightOutlined,
+  ArrowUpOutlined,
+  BarChartOutlined,
+  CheckCircleFilled,
+  CheckOutlined,
+  ClockCircleOutlined,
+  CloudOutlined,
+  CopyOutlined,
+  DatabaseOutlined,
+  DeleteOutlined,
+  EditOutlined,
+  ExportOutlined,
+  FileZipOutlined,
+  GlobalOutlined,
+  InfoCircleOutlined,
+  LeftOutlined,
+  LinkOutlined,
+  LockOutlined,
+  LogoutOutlined,
+  PlusOutlined,
+  ReloadOutlined,
+  RightOutlined,
+  SafetyCertificateOutlined,
+  SearchOutlined,
+  ThunderboltOutlined,
+  UserOutlined,
+} from '@ant-design/icons-vue';
+
+import { uiTheme } from './theme';
 import type {
   ArchiveDay,
   Breakdown,
@@ -25,8 +69,14 @@ const list = ref<Link[]>([]),
   query = ref(''),
   linksBusy = ref(false);
 const mutating = ref(false);
-const editDialog = ref<HTMLDialogElement>(),
-  deleteDialog = ref<HTMLDialogElement>();
+const editorOpen = ref(false),
+  deleteOpen = ref(false);
+const deleteError = ref('');
+const targetInput = ref<{ focus: () => void }>();
+const appliedSearch = ref('');
+const copiedId = ref('');
+const PasswordInput = Input.Password;
+const SearchInput = Input.Search;
 const editingId = ref(''),
   deleting = ref<Link | null>(null);
 const form = ref({ slug: '', target: '', title: '', enabled: true });
@@ -54,14 +104,22 @@ const archiveRows = ref<ArchiveDay[]>([]),
   archivesBusy = ref(false);
 const jobs = new Map<string, { worker: Worker; reject: (error: Error) => void }>();
 let toastTimer: ReturnType<typeof setTimeout>;
+let copyTimer: ReturnType<typeof setTimeout>;
 let statsRequest = 0,
-  detailRequest = 0;
+  detailRequest = 0,
+  linksRequest = 0;
 
-const number = (value: number) => new Intl.NumberFormat('zh-CN').format(value);
+const number = (value: number) =>
+  new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 1 }).format(value);
 const time = (value: number | null) =>
   value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '尚未运行';
 const shortUrl = (slug: string) => `${window.location.origin}/s/${slug}`;
 const modeName = computed(() => (system.value?.mode === 'detailed' ? '详细模式' : '经济模式'));
+const pageTitle = computed(
+  () => ({ links: '短链管理', stats: '访问统计', archives: '历史归档' })[tab.value],
+);
+const totalPages = computed(() => Math.max(1, Math.ceil(total.value / 20)));
+const host = window.location.host;
 const pv = computed(() => statsResult.value?.daily.reduce((sum, d) => sum + d.pv, 0) ?? 0);
 const chartDays = computed(() => {
   if (!statsResult.value) return [];
@@ -133,6 +191,7 @@ function archiveJob<T>(name: string, data: unknown): Promise<T> {
   });
 }
 function endSession() {
+  linksRequest++;
   statsRequest++;
   detailRequest++;
   for (const name of [...jobs.keys()]) cancelJob(name);
@@ -142,8 +201,14 @@ function endSession() {
   list.value = [];
   choices.value = [];
   archiveRows.value = [];
-  editDialog.value?.close();
-  deleteDialog.value?.close();
+  editorOpen.value = false;
+  deleteOpen.value = false;
+  tab.value = 'links';
+  query.value = '';
+  appliedSearch.value = '';
+  page.value = 1;
+  total.value = 0;
+  system.value = null;
 }
 async function bootstrap() {
   await api('/auth/session');
@@ -177,17 +242,21 @@ async function logout() {
 }
 async function loadLinks(reset = false) {
   if (reset) page.value = 1;
+  const request = ++linksRequest;
+  const search = query.value.trim();
   linksBusy.value = true;
   try {
     const data = await api<{ items: Link[]; total: number }>(
-      `/admin/links?page=${page.value}&q=${encodeURIComponent(query.value)}`,
+      `/admin/links?page=${page.value}&q=${encodeURIComponent(search)}`,
     );
+    if (request !== linksRequest) return;
     list.value = data.items;
     total.value = data.total;
+    appliedSearch.value = search;
   } catch (e) {
-    report(e);
+    if (request === linksRequest) report(e);
   } finally {
-    linksBusy.value = false;
+    if (request === linksRequest) linksBusy.value = false;
   }
 }
 async function navigate(next: typeof tab.value) {
@@ -202,6 +271,8 @@ async function navigate(next: typeof tab.value) {
     detailBusy.value = false;
   }
   tab.value = next;
+  document.title = `shorten url · ${pageTitle.value}`;
+  window.scrollTo({ top: 0, behavior: 'auto' });
   if (next === 'links') await loadLinks();
   if (next === 'stats') {
     try {
@@ -221,8 +292,9 @@ async function openEditor(link?: Link) {
   form.value = link
     ? { slug: link.slug, target: link.target, title: link.title, enabled: Boolean(link.enabled) }
     : { slug: '', target: '', title: '', enabled: true };
+  editorOpen.value = true;
   await nextTick();
-  editDialog.value?.showModal();
+  targetInput.value?.focus();
 }
 async function save() {
   mutating.value = true;
@@ -232,7 +304,7 @@ async function save() {
       method: editingId.value ? 'PUT' : 'POST',
       body: JSON.stringify(form.value),
     });
-    editDialog.value?.close();
+    editorOpen.value = false;
     toast(editingId.value ? '已保存，最多 60 秒内生效' : '短链已创建');
     await loadLinks(true);
   } catch (e) {
@@ -259,13 +331,14 @@ async function toggle(link: Link) {
 async function remove() {
   if (!deleting.value) return;
   mutating.value = true;
+  deleteError.value = '';
   try {
     await api(`/admin/links/${deleting.value.id}`, { method: 'DELETE', body: '{}' });
-    deleteDialog.value?.close();
+    deleteOpen.value = false;
     toast('短链已删除，历史统计继续保留');
     await loadLinks(true);
   } catch (e) {
-    report(e);
+    deleteError.value = e instanceof Error ? e.message : '删除失败，请重试';
   } finally {
     mutating.value = false;
   }
@@ -273,10 +346,39 @@ async function remove() {
 async function copy(link: Link) {
   try {
     await navigator.clipboard.writeText(shortUrl(link.slug));
+    copiedId.value = link.id;
+    clearTimeout(copyTimer);
+    copyTimer = setTimeout(() => (copiedId.value = ''), 2500);
     toast('短链已复制');
   } catch {
     error.value = '复制失败，请手动复制短链';
   }
+}
+function confirmDelete(link: Link) {
+  deleting.value = link;
+  deleteError.value = '';
+  deleteOpen.value = true;
+}
+function changePage(value: number) {
+  page.value = value;
+  void loadLinks();
+}
+function paginationItem({
+  page,
+  type,
+  originalElement,
+}: {
+  page: number;
+  type: string;
+  originalElement: VNode;
+}) {
+  return cloneVNode(originalElement, {
+    'aria-label': type === 'prev' ? '上一页' : type === 'next' ? '下一页' : `第 ${page} 页`,
+  });
+}
+function clearSearch() {
+  query.value = '';
+  void loadLinks(true);
 }
 function mergeBreakdown(a: Breakdown[], b: Breakdown[]) {
   const map = new Map(a.map((item) => [item.name, item.count]));
@@ -411,606 +513,1010 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   window.removeEventListener('session-expired', endSession);
   clearTimeout(toastTimer);
+  clearTimeout(copyTimer);
   for (const name of [...jobs.keys()]) cancelJob(name);
 });
 </script>
 
 <template>
-  <div v-if="!ready" class="boot">正在打开 shorten url…</div>
-  <main v-else-if="!loggedIn" class="login-layout">
-    <section class="login-story">
-      <div class="brand light">
-        <span class="brand-mark">↗</span
-        ><span>shorten url<span class="brand-en">SHORTLINK</span></span>
-      </div>
-      <div>
-        <span class="eyebrow">LESS DISTANCE. MORE CONNECTION.</span>
-        <h1>让每一次连接，<br />更近一点。</h1>
-        <p>把冗长的网址，变成清晰的入口。<br />管理你的链接，也看见链接背后的访问。</p>
-      </div>
-      <div class="route-art" aria-hidden="true">
-        <span>https://</span><i></i><b>/s/hello</b><em>↗</em>
-      </div>
-      <small>轻量短链管理 · 为 Cloudflare Workers 构建</small>
-    </section>
-    <section class="login-panel">
-      <form class="login-form" @submit.prevent="login">
-        <span class="eyebrow">YOUR LINK WORKSPACE</span>
-        <h2>欢迎回来</h2>
-        <p class="muted">登录管理后台，继续连接每一个目的地。</p>
-        <label for="password">管理员密码</label
-        ><input
-          id="password"
-          v-model="password"
-          type="password"
-          autocomplete="current-password"
-          required
-          autofocus
-          placeholder="输入管理员密码"
-        />
-        <p v-if="error" class="error" role="alert">{{ error }}</p>
-        <button class="primary full" :disabled="loginBusy">
-          {{ loginBusy ? '正在登录…' : '进入工作台' }} <span>→</span>
-        </button>
-        <p class="login-note">私人工作台 · 仅限管理员访问</p>
-      </form>
-    </section>
-  </main>
-  <div v-else class="workspace">
-    <aside class="sidebar">
-      <a href="/admin/" class="brand"
-        ><span class="brand-mark">↗</span
-        ><span>shorten url<span class="brand-en">SHORTLINK</span></span></a
-      >
-      <span class="nav-label">工作空间</span>
-      <nav aria-label="主导航">
-        <button :class="{ active: tab === 'links' }" @click="navigate('links')">
-          <span class="nav-icon">↗</span>短链管理<span class="nav-arrow">›</span>
-        </button>
-        <button :class="{ active: tab === 'stats' }" @click="navigate('stats')">
-          <span class="nav-icon">▥</span>访问统计<span class="nav-arrow">›</span>
-        </button>
-        <button :class="{ active: tab === 'archives' }" @click="navigate('archives')">
-          <span class="nav-icon">▤</span>历史归档<span class="nav-arrow">›</span>
-        </button>
-      </nav>
-      <div class="sidebar-bottom">
-        <div class="mode-card">
-          <span class="status-dot"></span><strong>{{ modeName }}</strong>
-          <p>
-            {{ system?.mode === 'economy' ? '专注跳转，减少数据读写' : '访问明细与趋势持续记录' }}
+  <ConfigProvider :locale="zhCN" :theme="uiTheme" :auto-insert-space-in-button="false">
+    <div v-if="!ready" class="boot" role="status">
+      <div class="brand-mark"><LinkOutlined aria-hidden="true" /></div>
+      <Spin /><span>正在打开工作台…</span>
+    </div>
+    <main v-else-if="!loggedIn" class="login-layout">
+      <section class="login-story">
+        <a href="/admin/" class="brand brand-light">
+          <span class="brand-mark"><LinkOutlined aria-hidden="true" /></span>
+          <span>shorten<span class="brand-word">url</span><small>你的短链工作台</small></span>
+        </a>
+        <div class="login-story-content">
+          <span class="story-label"><span></span> SMALL LINKS. BIG POSSIBILITIES.</span>
+          <h1>更短的链接，<br />更清晰的连接<span>。</span></h1>
+          <p>让每一个网址变得简洁好记。<br />从创建、分享，到了解每一次访问。</p>
+          <div class="connection-art" aria-hidden="true">
+            <div class="url-card original-url">
+              <GlobalOutlined aria-hidden="true" />
+              <div>
+                <small>从一个长网址开始</small><span>https://example.com/your-next-big-idea</span>
+              </div>
+            </div>
+            <div class="connection-line">
+              <span></span><ArrowRightOutlined aria-hidden="true" /><span></span
+              ><small>简单一点，刚刚好</small>
+            </div>
+            <div class="url-card shortened-url">
+              <div class="art-link-icon"><LinkOutlined aria-hidden="true" /></div>
+              <div>
+                <small>一个好记的新入口</small><strong>your.link<span>/s/hello</span></strong>
+              </div>
+              <ExportOutlined aria-hidden="true" />
+            </div>
+          </div>
+          <div class="story-features">
+            <span><CheckOutlined aria-hidden="true" /> 自定义路径</span
+            ><span><CheckOutlined aria-hidden="true" /> 访问洞察</span
+            ><span><CheckOutlined aria-hidden="true" /> 历史归档</span>
+          </div>
+        </div>
+        <span class="story-footer">更少的字符，更多的可能。</span>
+      </section>
+      <section class="login-panel">
+        <div class="login-panel-caption">
+          <SafetyCertificateOutlined aria-hidden="true" /> 私人工作空间
+        </div>
+        <form class="login-form" @submit.prevent="login">
+          <div class="login-symbol"><ArrowRightOutlined aria-hidden="true" /></div>
+          <span class="eyebrow">WELCOME BACK</span>
+          <h2>欢迎回来</h2>
+          <p class="login-description">登录工作台，管理你的每一个连接。</p>
+          <label for="password">管理员密码</label>
+          <PasswordInput
+            id="password"
+            v-model:value="password"
+            size="large"
+            autocomplete="current-password"
+            required
+            autofocus
+            placeholder="请输入管理员密码"
+            :disabled="loginBusy"
+            :status="error ? 'error' : undefined"
+            :aria-invalid="!!error"
+            :aria-describedby="error ? 'login-error' : undefined"
+          >
+            <template #prefix><LockOutlined aria-hidden="true" class="input-icon" /></template>
+          </PasswordInput>
+          <Alert
+            v-if="error"
+            id="login-error"
+            class="form-alert"
+            :message="error"
+            type="error"
+            show-icon
+            role="alert"
+          />
+          <Button
+            class="login-submit"
+            type="primary"
+            size="large"
+            block
+            html-type="submit"
+            :loading="loginBusy"
+            >{{ loginBusy ? '正在登录' : '进入工作台'
+            }}<ArrowRightOutlined aria-hidden="true" v-if="!loginBusy"
+          /></Button>
+          <p class="login-note">
+            <LockOutlined aria-hidden="true" /> 仅限管理员访问，安全管理你的链接
           </p>
-        </div>
-        <button class="logout" @click="logout">退出登录 <span>↪</span></button
-        ><small>更短的链接，更轻的负担。</small>
-      </div>
-    </aside>
-    <main class="main-content">
-      <header class="topbar">
-        <span
-          >工作空间 <span class="crumb">/</span>
-          {{ tab === 'links' ? '短链管理' : tab === 'stats' ? '访问统计' : '历史归档' }}</span
+        </form>
+        <p class="login-footer">shorten url <span>·</span> 让连接保持简单</p>
+      </section>
+    </main>
+    <div v-else class="workspace">
+      <a class="skip-link" href="#main-content">跳转到主内容</a>
+      <aside class="sidebar">
+        <a href="/admin/" class="brand"
+          ><span class="brand-mark"><LinkOutlined aria-hidden="true" /></span
+          ><span>shorten<span class="brand-word">url</span><small>你的短链工作台</small></span></a
         >
-        <div class="account-menu">
-          <span class="admin-avatar">A</span
-          ><button class="mobile-logout" @click="logout">退出登录</button>
+        <div class="workspace-label">
+          <span class="workspace-icon"><AppstoreOutlined aria-hidden="true" /></span>
+          <div><strong>个人工作空间</strong><small>链接管理控制台</small></div>
         </div>
-      </header>
-      <div class="content">
-        <div v-if="error" class="error global-error" role="alert">
-          {{ error }}<button aria-label="关闭提示" @click="error = ''">×</button>
-        </div>
-        <template v-if="tab === 'links'">
-          <div class="page-heading">
-            <div>
-              <span class="eyebrow">LINKS, SIMPLIFIED</span>
-              <h1>每个链接，都有一个好去处。</h1>
-              <p>创建、整理和分享你的短链，让连接保持简单。</p>
-            </div>
-            <button class="primary" @click="openEditor()"><span>＋</span> 新建短链</button>
+        <span class="nav-label">工作台</span>
+        <nav aria-label="主导航">
+          <button
+            :class="{ active: tab === 'links' }"
+            :aria-current="tab === 'links' ? 'page' : undefined"
+            @click="navigate('links')"
+          >
+            <LinkOutlined aria-hidden="true" /><span>短链管理</span
+            ><RightOutlined aria-hidden="true" class="nav-arrow" />
+          </button>
+          <button
+            :class="{ active: tab === 'stats' }"
+            :aria-current="tab === 'stats' ? 'page' : undefined"
+            @click="navigate('stats')"
+          >
+            <BarChartOutlined aria-hidden="true" /><span>访问统计</span
+            ><RightOutlined aria-hidden="true" class="nav-arrow" />
+          </button>
+          <button
+            :class="{ active: tab === 'archives' }"
+            :aria-current="tab === 'archives' ? 'page' : undefined"
+            @click="navigate('archives')"
+          >
+            <FileZipOutlined aria-hidden="true" /><span>历史归档</span
+            ><RightOutlined aria-hidden="true" class="nav-arrow" />
+          </button>
+        </nav>
+        <div class="sidebar-bottom">
+          <div class="mode-card">
+            <span class="mode-icon"><ThunderboltOutlined aria-hidden="true" /></span
+            ><strong>{{ modeName }}</strong
+            ><span class="status-dot"></span>
+            <p>
+              {{
+                system?.mode === 'economy'
+                  ? '轻量运行，专注每一次跳转'
+                  : '记录每一次访问，发现更多洞察'
+              }}
+            </p>
           </div>
-          <div class="overview-grid">
-            <section class="metric">
-              <span>短链总数</span><strong>{{ number(total) }}<small>个链接</small></strong>
-              <p>当前搜索范围内的短链</p>
-            </section>
-            <section class="metric">
-              <span>当前运行模式</span
-              ><strong class="text-metric"
-                >{{ modeName }} <span class="tiny-badge">运行中</span></strong
+          <div class="sidebar-account">
+            <span class="admin-avatar"><UserOutlined aria-hidden="true" /></span>
+            <div><strong>管理员</strong><small>工作空间所有者</small></div>
+            <Tooltip title="退出登录"
+              ><Button type="text" aria-label="退出登录" @click="logout"
+                ><LogoutOutlined aria-hidden="true" /></Button
+            ></Tooltip>
+          </div>
+        </div>
+      </aside>
+      <div class="main-content">
+        <header class="topbar">
+          <div class="breadcrumb">
+            <AppstoreOutlined aria-hidden="true" /><span class="breadcrumb-parent">工作空间</span
+            ><RightOutlined aria-hidden="true" class="crumb" /><span>{{ pageTitle }}</span>
+          </div>
+          <div class="topbar-right">
+            <span class="host-label"><GlobalOutlined aria-hidden="true" />{{ host }}</span
+            ><span class="topbar-divider"></span
+            ><span class="workspace-status"><span class="status-dot"></span>工作空间</span
+            ><Button class="mobile-logout" type="text" aria-label="退出登录" @click="logout"
+              ><LogoutOutlined aria-hidden="true"
+            /></Button>
+          </div>
+        </header>
+        <main id="main-content" class="content" tabindex="-1">
+          <Alert
+            v-if="error"
+            class="global-error"
+            :message="error"
+            type="error"
+            show-icon
+            closable
+            role="alert"
+            @close="error = ''"
+          />
+          <template v-if="tab === 'links'">
+            <div class="page-heading">
+              <div>
+                <span class="eyebrow">YOUR LINKS</span>
+                <h1>短链管理</h1>
+                <p>把长网址变成好记的短链，让每一次分享更简单。</p>
+              </div>
+              <Button type="primary" @click="openEditor()"
+                ><template #icon><PlusOutlined aria-hidden="true" /></template>新建短链</Button
               >
-              <p>
-                {{
-                  system?.mode === 'economy'
-                    ? '缓存命中时，无数据库读写'
-                    : '访问记录异步保存，不等待统计写入'
-                }}
-              </p>
-            </section>
-            <section class="metric accent">
-              <span>自定义，让链接更易记</span
-              ><strong class="example-url">/s/your/next-idea <span>↗</span></strong>
-              <p>支持多层路径，也可以自动生成短码</p>
-            </section>
-          </div>
-          <section class="panel">
-            <div class="panel-toolbar">
-              <div>
-                <h2>
-                  我的短链 <span class="count">{{ total }}</span>
-                </h2>
-              </div>
-              <form class="search" @submit.prevent="loadLinks(true)">
-                <span aria-hidden="true">⌕</span
-                ><input
-                  v-model="query"
-                  aria-label="搜索短链"
-                  placeholder="搜索路径、标题或目标网址"
-                /><button :disabled="linksBusy">搜索</button>
-              </form>
             </div>
-            <div class="table-scroll">
-              <table class="links-table">
-                <thead>
-                  <tr>
-                    <th>短链 / 目标网址</th>
-                    <th>状态</th>
-                    <th>创建时间</th>
-                    <th class="align-right">操作</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="link in list" :key="link.id">
-                    <td>
-                      <div class="link-title">
-                        <a :href="shortUrl(link.slug)" target="_blank" rel="noopener noreferrer"
-                          >/s/{{ link.slug }} <span>↗</span></a
-                        ><small v-if="link.title">{{ link.title }}</small>
-                      </div>
-                      <div class="target-url" :title="link.target">{{ link.target }}</div>
-                    </td>
-                    <td>
-                      <button
-                        class="status-pill"
-                        :class="link.enabled ? 'enabled' : 'disabled'"
-                        :disabled="mutating"
-                        @click="toggle(link)"
-                      >
-                        <i></i>{{ link.enabled ? '启用中' : '已停用' }}
-                      </button>
-                    </td>
-                    <td class="date-cell">
-                      {{ new Date(link.created_at).toLocaleDateString('zh-CN') }}
-                    </td>
-                    <td>
-                      <div class="row-actions">
-                        <button @click="copy(link)">复制</button
-                        ><button @click="openEditor(link)">编辑</button
-                        ><button
-                          @click="
-                            linkId = link.id;
-                            navigate('stats');
-                          "
-                        >
-                          统计</button
-                        ><button
-                          class="danger-text"
-                          @click="
-                            deleting = link;
-                            deleteDialog?.showModal();
-                          "
-                        >
-                          删除
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-            <div v-if="!list.length" class="empty-state">
-              <span class="empty-icon">↗</span>
-              <h3>{{ query ? '没有找到匹配的短链' : '你的下一个连接，从这里开始' }}</h3>
-              <p>
-                {{
-                  query
-                    ? '试试其他路径、标题或网址。'
-                    : '创建第一个短链，为它取一个容易记住的名字。'
-                }}
-              </p>
-              <button v-if="!query" class="secondary" @click="openEditor()">创建第一个短链</button>
-            </div>
-            <div class="pagination">
-              <span>{{ linksBusy ? '正在加载…' : `共 ${total} 个短链 · 第 ${page} 页` }}</span>
-              <div>
-                <button
-                  :disabled="page <= 1 || linksBusy"
-                  @click="
-                    page--;
-                    loadLinks();
-                  "
+            <div class="overview-grid">
+              <section class="metric">
+                <div class="metric-header">
+                  <span>{{ appliedSearch ? '匹配短链' : '短链总数' }}</span
+                  ><span class="metric-icon"><LinkOutlined aria-hidden="true" /></span>
+                </div>
+                <strong class="metric-value">{{ number(total) }}<small>个</small></strong>
+                <p>
+                  <span class="metric-dot"></span
+                  >{{ appliedSearch ? '当前搜索条件下的结果' : '所有连接，在这里井然有序' }}
+                </p>
+              </section>
+              <section class="metric">
+                <div class="metric-header">
+                  <span>当前运行模式</span
+                  ><span class="metric-icon green"><ThunderboltOutlined aria-hidden="true" /></span>
+                </div>
+                <strong class="metric-value text-metric"
+                  >{{ modeName }}<Tag color="success" :bordered="false">运行中</Tag></strong
                 >
-                  ← 上一页</button
-                ><button
-                  :disabled="page * 20 >= total || linksBusy"
-                  @click="
-                    page++;
-                    loadLinks();
-                  "
-                >
-                  下一页 →
+                <p>
+                  {{
+                    system?.mode === 'economy'
+                      ? '暂停记录新访问，已有统计仍可查询'
+                      : '自动记录访问趋势与访客明细'
+                  }}
+                </p>
+              </section>
+              <section class="metric tip-card">
+                <div class="metric-header">
+                  <span>好链接，也有好名字</span><ExportOutlined aria-hidden="true" />
+                </div>
+                <strong class="example-url">/s/your-next-idea</strong>
+                <p>自定义路径，让分享多一点辨识度。</p>
+                <button class="text-link" @click="openEditor()">
+                  创建专属短链 <ArrowRightOutlined aria-hidden="true" />
                 </button>
+              </section>
+            </div>
+            <section class="panel links-panel" aria-labelledby="links-title" :aria-busy="linksBusy">
+              <div class="panel-toolbar">
+                <div class="panel-title">
+                  <h2 id="links-title">{{ appliedSearch ? '搜索结果' : '全部短链' }}</h2>
+                  <span class="count">{{ number(total) }}</span>
+                </div>
+                <div class="toolbar-actions">
+                  <SearchInput
+                    v-model:value="query"
+                    class="search-input"
+                    placeholder="搜索路径、标题或目标网址"
+                    aria-label="搜索短链"
+                    allow-clear
+                    :loading="linksBusy"
+                    @search="loadLinks(true)"
+                  >
+                    <template #enterButton>
+                      <Button aria-label="搜索短链" :loading="linksBusy"
+                        ><SearchOutlined aria-hidden="true" v-if="!linksBusy"
+                      /></Button>
+                    </template> </SearchInput
+                  ><Tooltip title="刷新列表"
+                    ><Button
+                      class="refresh-button"
+                      aria-label="刷新列表"
+                      :loading="linksBusy"
+                      @click="loadLinks()"
+                      ><ReloadOutlined aria-hidden="true" v-if="!linksBusy" /></Button
+                  ></Tooltip>
+                </div>
               </div>
-            </div>
-          </section>
-          <p class="footnote"><span>ⓘ</span> 修改、停用或删除后，最多 60 秒在所有节点生效。</p>
-        </template>
-
-        <template v-if="tab === 'stats'">
-          <div class="page-heading">
-            <div>
-              <span class="eyebrow">BEHIND EVERY CLICK</span>
-              <h1>看见每一次抵达。</h1>
-              <p>从访问趋势到访客明细，了解你的链接如何被使用。</p>
-            </div>
-          </div>
-          <div v-if="system?.mode === 'economy'" class="info-banner">
-            当前为经济模式，暂停记录新访问；已有统计仍可查询。
-          </div>
-          <form class="filter-bar" @submit.prevent="loadStats">
-            <label
-              >开始日期<input
-                v-model="from"
-                type="date"
-                :min="system?.earliestDay"
-                :max="to"
-                :disabled="statsBusy"
-                required /></label
-            ><label
-              >结束日期<input
-                v-model="to"
-                type="date"
-                :min="from"
-                :max="today"
-                :disabled="statsBusy"
-                required /></label
-            ><label class="grow"
-              >短链<select v-model="linkId" :disabled="statsBusy">
-                <option value="">全部短链</option>
-                <option v-if="linkId && !choices.some((x) => x.id === linkId)" :value="linkId">
-                  指定短链 {{ linkId }}
-                </option>
-                <option v-for="link in choices" :key="link.id" :value="link.id">
-                  /s/{{ link.slug }}{{ link.deleted_at ? '（已删除）' : '' }}
-                </option>
-              </select></label
-            ><button class="primary" :disabled="statsBusy">
-              {{ statsBusy ? '正在查询…' : '查询统计' }}
-            </button>
-          </form>
-          <div v-if="archiveLoading" class="info-banner progress-banner">
-            <span>正在读取历史归档 · {{ progress }}%</span
-            ><progress :value="progress" max="100"></progress
-            ><button @click="cancelJob('stats')">取消</button>
-          </div>
-          <p v-if="partial" class="footnote">历史归档尚未全部加载，当前数字为部分结果。</p>
-          <div class="overview-grid stats-metrics">
-            <section class="metric">
-              <span>访问次数 · PV</span><strong>{{ number(pv) }}</strong>
-              <p>{{ appliedQuery.from }} — {{ appliedQuery.to }}</p>
-            </section>
-            <section class="metric">
-              <span>日均独立访客 · UV</span><strong>{{ number(averageUv) }}</strong>
-              <p>按 IP 与 User-Agent 每日去重</p>
-            </section>
-            <section class="metric accent">
-              <span>历史归档</span><strong>{{ coldDays.length }}<small>天</small></strong>
-              <p>在浏览器中解压分析历史访问</p>
-            </section>
-          </div>
-          <section class="panel chart-panel">
-            <div class="panel-toolbar">
-              <h2>访问趋势</h2>
-              <span class="chart-legend"><i></i> 每日访问次数</span>
-            </div>
-            <div class="chart-wrap">
-              <svg viewBox="0 0 760 180" role="img" aria-label="每日访问次数柱状图">
-                <line
-                  v-for="y in [20, 65, 110, 155]"
-                  :key="y"
-                  x1="0"
-                  :y1="y"
-                  x2="760"
-                  :y2="y"
-                  stroke="#e8ece8"
+              <div v-if="appliedSearch" class="search-summary">
+                <span>包含「{{ appliedSearch }}」的短链</span
+                ><Button type="link" size="small" @click="clearSearch">清除搜索</Button>
+              </div>
+              <div
+                v-if="linksBusy && !list.length"
+                class="loading-state"
+                role="status"
+                aria-label="正在加载短链"
+              >
+                <Skeleton active :paragraph="{ rows: 4 }" />
+              </div>
+              <template v-else>
+                <div v-if="list.length" class="table-scroll">
+                  <table class="links-table">
+                    <caption class="sr-only">
+                      短链列表，包含目标网址、启用状态、创建日期和管理操作
+                    </caption>
+                    <thead>
+                      <tr>
+                        <th scope="col">短链 / 目标网址</th>
+                        <th scope="col">状态</th>
+                        <th scope="col">创建日期</th>
+                        <th scope="col" class="align-right">操作</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="link in list" :key="link.id">
+                        <td class="link-cell">
+                          <div class="link-item">
+                            <div class="link-symbol"><LinkOutlined aria-hidden="true" /></div>
+                            <div class="link-information">
+                              <div class="link-title">
+                                <a
+                                  :href="shortUrl(link.slug)"
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  :title="shortUrl(link.slug)"
+                                  >/s/{{ link.slug }}<ExportOutlined aria-hidden="true" /></a
+                                ><span v-if="link.title" class="link-note">{{ link.title }}</span>
+                              </div>
+                              <div class="target-url" :title="link.target">{{ link.target }}</div>
+                            </div>
+                          </div>
+                        </td>
+                        <td data-label="状态">
+                          <div class="link-state">
+                            <Switch
+                              :checked="Boolean(link.enabled)"
+                              size="small"
+                              :disabled="mutating"
+                              :aria-label="`${link.enabled ? '停用' : '启用'}短链 /s/${link.slug}`"
+                              @change="toggle(link)"
+                            /><span :class="{ muted: !link.enabled }">{{
+                              link.enabled ? '启用中' : '已停用'
+                            }}</span>
+                          </div>
+                        </td>
+                        <td data-label="创建日期" class="date-cell">
+                          {{ new Date(link.created_at).toLocaleDateString('zh-CN') }}
+                        </td>
+                        <td class="actions-cell">
+                          <div class="row-actions">
+                            <Tooltip :title="copiedId === link.id ? '已复制' : '复制短链'"
+                              ><Button
+                                type="text"
+                                size="small"
+                                :class="{ 'copy-success': copiedId === link.id }"
+                                :aria-label="`复制短链 /s/${link.slug}`"
+                                @click="copy(link)"
+                                ><CheckOutlined
+                                  aria-hidden="true"
+                                  v-if="copiedId === link.id"
+                                /><CopyOutlined aria-hidden="true" v-else /><span
+                                  class="action-label"
+                                  >{{ copiedId === link.id ? '已复制' : '复制' }}</span
+                                ></Button
+                              ></Tooltip
+                            ><Tooltip title="编辑短链"
+                              ><Button
+                                type="text"
+                                size="small"
+                                :aria-label="`编辑短链 /s/${link.slug}`"
+                                @click="openEditor(link)"
+                                ><EditOutlined aria-hidden="true" /><span class="action-label"
+                                  >编辑</span
+                                ></Button
+                              ></Tooltip
+                            ><Tooltip title="查看统计"
+                              ><Button
+                                type="text"
+                                size="small"
+                                :aria-label="`查看 /s/${link.slug} 的统计`"
+                                @click="
+                                  linkId = link.id;
+                                  navigate('stats');
+                                "
+                                ><BarChartOutlined aria-hidden="true" /><span class="action-label"
+                                  >统计</span
+                                ></Button
+                              ></Tooltip
+                            ><span class="action-divider"></span
+                            ><Tooltip title="删除短链"
+                              ><Button
+                                type="text"
+                                size="small"
+                                danger
+                                :aria-label="`删除短链 /s/${link.slug}`"
+                                @click="confirmDelete(link)"
+                                ><DeleteOutlined aria-hidden="true" /><span class="action-label"
+                                  >删除</span
+                                ></Button
+                              ></Tooltip
+                            >
+                          </div>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <div v-else class="empty-state">
+                  <div class="empty-illustration">
+                    <SearchOutlined aria-hidden="true" v-if="appliedSearch" /><LinkOutlined
+                      aria-hidden="true"
+                      v-else
+                    />
+                  </div>
+                  <h3>{{ appliedSearch ? '没有找到匹配的短链' : '从第一个短链开始' }}</h3>
+                  <p>
+                    {{
+                      appliedSearch
+                        ? '换一个关键词，试试路径、标题或目标网址。'
+                        : '粘贴一个长网址，为你的下一个分享创建简洁入口。'
+                    }}
+                  </p>
+                  <Button v-if="appliedSearch" @click="clearSearch">查看全部短链</Button
+                  ><Button v-else type="primary" @click="openEditor()"
+                    ><PlusOutlined aria-hidden="true" />创建第一个短链</Button
+                  >
+                </div>
+              </template>
+              <div class="pagination">
+                <span
+                  >{{ linksBusy ? '正在加载…' : `共 ${number(total)} 个短链`
+                  }}<span class="page-total"> · 第 {{ page }} / {{ totalPages }} 页</span></span
+                ><Pagination
+                  :current="page"
+                  :total="total"
+                  :page-size="20"
+                  :show-size-changer="false"
+                  :disabled="linksBusy"
+                  size="small"
+                  :show-less-items="true"
+                  :item-render="paginationItem"
+                  @change="changePage"
                 />
-                <rect
-                  v-for="(day, index) in chartDays"
-                  :key="day.day"
-                  :x="(index * 760) / chartDays.length + 2"
-                  :y="155 - (day.pv / maxPv) * 130"
-                  :width="Math.max(1, 760 / chartDays.length - 4)"
-                  :height="Math.max(day.pv ? 2 : 0, (day.pv / maxPv) * 130)"
-                  rx="3"
-                  fill="#3e7966"
-                >
-                  <title>{{ day.day }} · PV {{ day.pv }} · UV {{ day.uv }}</title>
-                </rect>
-              </svg>
-              <div class="chart-labels">
-                <span>{{ appliedQuery.from }}</span
-                ><span>{{ appliedQuery.to }}</span>
               </div>
-              <p v-if="!pv" class="muted center">所选时间范围暂无已记录的访问</p>
-            </div>
-          </section>
-          <div class="breakdown-grid">
-            <section v-for="group in breakdowns" :key="group.label" class="panel breakdown">
-              <h2>{{ group.label }}</h2>
-              <div v-for="item in group.values.slice(0, 6)" :key="item.name" class="breakdown-row">
-                <div>
-                  <span>{{ item.name || group.empty }}</span
-                  ><b>{{ number(item.count) }}</b>
-                </div>
-                <div class="bar-track">
-                  <i
-                    :style="{
-                      width: `${(item.count / Math.max(1, group.values[0]?.count ?? 1)) * 100}%`,
-                    }"
-                  ></i>
-                </div>
-              </div>
-              <p v-if="!group.values.length" class="muted">暂无数据</p>
             </section>
-          </div>
-          <section class="panel">
-            <div class="panel-toolbar">
-              <h2>访问明细 <small>UTC 日期</small></h2>
-              <input
-                v-model="detailDay"
-                aria-label="明细日期"
-                type="date"
-                :min="system?.earliestDay"
-                :max="today"
-                @change="loadEvents(true)"
+            <p class="footnote">
+              <InfoCircleOutlined aria-hidden="true" /> 修改、停用或删除短链后，最多需要 60 秒生效。
+            </p>
+          </template>
+
+          <template v-if="tab === 'stats'">
+            <div class="page-heading">
+              <div>
+                <span class="eyebrow">LINK ANALYTICS</span>
+                <h1>访问统计</h1>
+                <p>每一次点击都有迹可循，了解链接背后的访问。</p>
+              </div>
+              <Tag class="heading-tag" :bordered="false"
+                ><ClockCircleOutlined aria-hidden="true" /> 按 UTC 日期统计</Tag
+              >
+            </div>
+            <Alert
+              v-if="system?.mode === 'economy'"
+              class="global-error"
+              message="当前为经济模式，暂停记录新访问；已有统计仍可查询。"
+              type="info"
+              show-icon
+            />
+            <form class="filter-bar panel" @submit.prevent="loadStats">
+              <label
+                >开始日期<input
+                  v-model="from"
+                  type="date"
+                  :min="system?.earliestDay"
+                  :max="to"
+                  :disabled="statsBusy"
+                  required /></label
+              ><span class="date-separator">—</span
+              ><label
+                >结束日期<input
+                  v-model="to"
+                  type="date"
+                  :min="from"
+                  :max="today"
+                  :disabled="statsBusy"
+                  required /></label
+              ><label class="grow"
+                >短链<select v-model="linkId" :disabled="statsBusy">
+                  <option value="">全部短链</option>
+                  <option v-if="linkId && !choices.some((x) => x.id === linkId)" :value="linkId">
+                    指定短链 {{ linkId }}
+                  </option>
+                  <option v-for="link in choices" :key="link.id" :value="link.id">
+                    /s/{{ link.slug }}{{ link.deleted_at ? '（已删除）' : '' }}
+                  </option>
+                </select></label
+              ><Button type="primary" html-type="submit" :loading="statsBusy"
+                ><SearchOutlined aria-hidden="true" v-if="!statsBusy" />{{
+                  statsBusy ? '正在查询' : '查询统计'
+                }}</Button
+              >
+            </form>
+            <div v-if="archiveLoading" class="progress-banner" role="status">
+              <CloudOutlined aria-hidden="true" /><span>正在读取历史归档 · {{ progress }}%</span
+              ><progress :value="progress" max="100" aria-label="历史归档加载进度"></progress
+              ><Button type="link" size="small" @click="cancelJob('stats')">取消</Button>
+            </div>
+            <p v-if="partial" class="footnote">
+              <InfoCircleOutlined aria-hidden="true" />历史归档尚未全部加载，当前数字为部分结果。
+            </p>
+            <div class="overview-grid" :aria-busy="statsBusy">
+              <section class="metric">
+                <div class="metric-header">
+                  <span>访问次数 · PV</span
+                  ><span class="metric-icon"><BarChartOutlined aria-hidden="true" /></span>
+                </div>
+                <strong class="metric-value">{{
+                  statsBusy && !statsResult ? '—' : number(pv)
+                }}</strong>
+                <p>{{ appliedQuery.from }} 至 {{ appliedQuery.to }}</p>
+              </section>
+              <section class="metric">
+                <div class="metric-header">
+                  <span>日均独立访客 · UV</span
+                  ><span class="metric-icon green"><UserOutlined aria-hidden="true" /></span>
+                </div>
+                <strong class="metric-value">{{
+                  statsBusy && !statsResult ? '—' : number(averageUv)
+                }}</strong>
+                <p>所选范围内，每天的平均独立访客数</p>
+              </section>
+              <section class="metric">
+                <div class="metric-header">
+                  <span>包含历史归档</span
+                  ><span class="metric-icon amber"><FileZipOutlined aria-hidden="true" /></span>
+                </div>
+                <strong class="metric-value">{{ coldDays.length }}<small>天</small></strong>
+                <p>归档数据与近期访问合并展示</p>
+              </section>
+            </div>
+            <section class="panel chart-panel">
+              <div class="panel-toolbar">
+                <div>
+                  <h2>访问趋势</h2>
+                  <p class="panel-description">查看所选时间范围内的每日访问量</p>
+                </div>
+                <span class="chart-legend"><i></i>访问次数 PV</span>
+              </div>
+              <div v-if="statsBusy && !statsResult" class="loading-state">
+                <Skeleton active :paragraph="{ rows: 4 }" />
+              </div>
+              <div v-else class="chart-wrap">
+                <div class="chart-y-labels" aria-hidden="true">
+                  <span>{{ number(maxPv) }}</span
+                  ><span>{{ number(Math.round(maxPv / 2)) }}</span
+                  ><span>0</span>
+                </div>
+                <div class="chart-plot">
+                  <svg
+                    viewBox="0 0 760 180"
+                    preserveAspectRatio="none"
+                    role="img"
+                    :aria-label="`${appliedQuery.from} 至 ${appliedQuery.to}，每日访问次数柱状图，共 ${pv} 次访问`"
+                  >
+                    <line
+                      v-for="y in [20, 65, 110, 155]"
+                      :key="y"
+                      x1="0"
+                      :y1="y"
+                      x2="760"
+                      :y2="y"
+                      class="chart-gridline"
+                    />
+                    <rect
+                      v-for="(day, index) in chartDays"
+                      :key="day.day"
+                      :x="(index * 760) / chartDays.length + (760 / chartDays.length) * 0.24"
+                      :y="155 - (day.pv / maxPv) * 135"
+                      :width="Math.max(1, (760 / chartDays.length) * 0.52)"
+                      :height="Math.max(day.pv ? 2 : 0, (day.pv / maxPv) * 135)"
+                      rx="4"
+                      class="chart-bar"
+                    >
+                      <title>{{ day.day }} · PV {{ day.pv }} · UV {{ day.uv }}</title>
+                    </rect>
+                  </svg>
+                  <div class="chart-labels">
+                    <span>{{ appliedQuery.from }}</span
+                    ><span>{{ appliedQuery.to }}</span>
+                  </div>
+                  <div v-if="!pv" class="chart-empty">
+                    <BarChartOutlined aria-hidden="true" /><span>所选时间范围暂无已记录的访问</span>
+                  </div>
+                </div>
+              </div>
+            </section>
+            <div class="breakdown-grid">
+              <section v-for="group in breakdowns" :key="group.label" class="panel breakdown">
+                <h2>{{ group.label }}<span>访问次数</span></h2>
+                <div
+                  v-for="(item, index) in group.values.slice(0, 6)"
+                  :key="item.name"
+                  class="breakdown-row"
+                >
+                  <div>
+                    <span class="breakdown-name"
+                      ><span class="rank">{{ index + 1 }}</span
+                      >{{ item.name || group.empty }}</span
+                    ><b>{{ number(item.count) }}</b>
+                  </div>
+                  <div class="bar-track">
+                    <i
+                      :style="{
+                        width: `${(item.count / Math.max(1, group.values[0]?.count ?? 1)) * 100}%`,
+                      }"
+                    ></i>
+                  </div>
+                </div>
+                <div v-if="!group.values.length" class="breakdown-empty">
+                  <span>—</span>
+                  <p>暂无访问数据</p>
+                </div>
+              </section>
+            </div>
+            <section class="panel" :aria-busy="detailBusy">
+              <div class="panel-toolbar">
+                <div>
+                  <h2>访问明细</h2>
+                  <p class="panel-description">逐条查看访问时间、来源与设备</p>
+                </div>
+                <input
+                  v-model="detailDay"
+                  aria-label="明细日期"
+                  type="date"
+                  :min="system?.earliestDay"
+                  :max="today"
+                  :disabled="detailBusy"
+                  @change="loadEvents(true)"
+                />
+              </div>
+              <div class="table-scroll">
+                <table class="detail-table">
+                  <caption class="sr-only">
+                    访问记录明细
+                  </caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">访问时间</th>
+                      <th scope="col">短链</th>
+                      <th scope="col">IP / 地区</th>
+                      <th scope="col">来源</th>
+                      <th scope="col">浏览器 / 设备</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="event in events" :key="event.id">
+                      <td class="nowrap">{{ time(event.occurred_at) }}</td>
+                      <td class="mono">/s/{{ event.slug }}</td>
+                      <td>
+                        <span class="mono">{{ event.ip || '未知' }}</span
+                        ><small class="cell-secondary">{{
+                          [event.country, event.region, event.city].filter(Boolean).join(' · ') ||
+                          '未知地区'
+                        }}</small>
+                      </td>
+                      <td class="event-referer" :title="event.referer">
+                        {{ event.referer || '直接访问' }}
+                      </td>
+                      <td>
+                        {{ event.browser }}<small class="cell-secondary">{{ event.device }}</small>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div v-if="!events.length" class="compact-empty" role="status">
+                <Spin v-if="detailBusy" /><DatabaseOutlined aria-hidden="true" v-else /><span>{{
+                  detailBusy ? '正在加载明细…' : '该日暂无已记录的访问'
+                }}</span>
+              </div>
+              <div class="pagination">
+                <span>{{ detailBusy ? '正在读取…' : `第 ${eventPage} 页` }}</span>
+                <div class="pagination-buttons">
+                  <Button
+                    size="small"
+                    :disabled="eventPage <= 1 || detailBusy"
+                    @click="
+                      eventPage--;
+                      loadEvents();
+                    "
+                    ><LeftOutlined aria-hidden="true" />上一页</Button
+                  ><Button
+                    size="small"
+                    :disabled="!hasMore || detailBusy"
+                    @click="
+                      eventPage++;
+                      loadEvents();
+                    "
+                    >下一页<RightOutlined aria-hidden="true"
+                  /></Button>
+                </div>
+              </div>
+            </section>
+            <p class="footnote">
+              <InfoCircleOutlined aria-hidden="true" /> UV 按 IP
+              与浏览器信息每日去重；明细时间按你的本地时区显示。
+            </p>
+          </template>
+
+          <template v-if="tab === 'archives'">
+            <div class="page-heading">
+              <div>
+                <span class="eyebrow">YOUR LINK HISTORY</span>
+                <h1>历史归档</h1>
+                <p>自动整理历史访问记录，让每一次连接都有迹可循。</p>
+              </div>
+              <Button :loading="archivesBusy" @click="loadArchives()"
+                ><ReloadOutlined aria-hidden="true" v-if="!archivesBusy" />刷新状态</Button
+              >
+            </div>
+            <div class="overview-grid">
+              <section class="metric">
+                <div class="metric-header">
+                  <span>自动归档间隔</span
+                  ><span class="metric-icon"><ClockCircleOutlined aria-hidden="true" /></span>
+                </div>
+                <strong class="metric-value">20<small>分钟</small></strong>
+                <p>自动分批处理，无需手动操作</p>
+              </section>
+              <section class="metric">
+                <div class="metric-header">
+                  <span>统计保留时间</span
+                  ><span class="metric-icon green"
+                    ><SafetyCertificateOutlined aria-hidden="true"
+                  /></span>
+                </div>
+                <strong class="metric-value">{{ system?.retentionDays }}<small>天</small></strong>
+                <p>保留范围包含今天，按 UTC 日期计算</p>
+              </section>
+              <section class="metric">
+                <div class="metric-header">
+                  <span>待归档访问</span
+                  ><span class="metric-icon amber"><DatabaseOutlined aria-hidden="true" /></span>
+                </div>
+                <strong class="metric-value"
+                  >{{ number(system?.backlog ?? 0) }}<small>条</small></strong
+                >
+                <p>归档成功后自动清理原始记录</p>
+              </section>
+            </div>
+            <section class="panel maintenance-card">
+              <div class="maintenance-icon"><CloudOutlined aria-hidden="true" /></div>
+              <div>
+                <strong>自动归档任务</strong>
+                <p>超过 {{ system?.hotDays ?? 14 }} 天的访问记录将按日归档</p>
+              </div>
+              <div class="maintenance-time">
+                <span>最近成功处理</span
+                ><strong>{{ time(system?.maintenance.last_success_at ?? null) }}</strong>
+              </div>
+              <div class="maintenance-time">
+                <span>最近检查</span
+                ><strong>{{ time(system?.maintenance.last_run_at ?? null) }}</strong>
+              </div>
+              <Alert
+                v-if="system?.maintenance.last_error"
+                class="maintenance-error"
+                :message="system.maintenance.last_error"
+                type="error"
+                show-icon
+              />
+            </section>
+            <section class="panel" :aria-busy="archivesBusy">
+              <div class="panel-toolbar">
+                <div class="panel-title">
+                  <h2>归档目录</h2>
+                  <Tag :bordered="false">按日归档</Tag>
+                </div>
+                <span class="panel-meta">UTC 日期</span>
+              </div>
+              <div
+                v-if="archivesBusy && !archiveRows.length"
+                class="loading-state"
+                role="status"
+                aria-label="正在加载归档"
+              >
+                <Skeleton active :paragraph="{ rows: 3 }" />
+              </div>
+              <template v-else
+                ><div v-if="archiveRows.length" class="table-scroll">
+                  <table class="archive-table">
+                    <caption class="sr-only">
+                      历史访问归档目录
+                    </caption>
+                    <thead>
+                      <tr>
+                        <th scope="col">访问日期</th>
+                        <th scope="col">归档状态</th>
+                        <th scope="col">访问记录</th>
+                        <th scope="col">压缩体积</th>
+                        <th scope="col" class="align-right">操作</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="day in archiveRows" :key="day.day">
+                        <td>
+                          <span class="archive-date"
+                            ><FileZipOutlined aria-hidden="true" /><span class="mono">{{
+                              day.day
+                            }}</span></span
+                          >
+                        </td>
+                        <td>
+                          <Tag
+                            :color="
+                              day.status === 'cleaned'
+                                ? 'success'
+                                : day.status === 'published'
+                                  ? 'processing'
+                                  : 'warning'
+                            "
+                            :bordered="false"
+                            >{{ archiveLabel(day.status) }}</Tag
+                          >
+                        </td>
+                        <td>{{ number(day.row_count) }}<span class="cell-unit"> 条</span></td>
+                        <td>
+                          {{ (day.byte_count / 1024).toFixed(1) }}<span class="cell-unit"> KB</span>
+                        </td>
+                        <td class="align-right">
+                          <Button
+                            type="link"
+                            size="small"
+                            :disabled="!['published', 'cleaned'].includes(day.status)"
+                            @click="
+                              from = day.day;
+                              to = day.day;
+                              detailDay = day.day;
+                              linkId = '';
+                              navigate('stats');
+                            "
+                            >查看访问<ArrowRightOutlined aria-hidden="true"
+                          /></Button>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <div v-else class="empty-state">
+                  <div class="empty-illustration"><FileZipOutlined aria-hidden="true" /></div>
+                  <h3>历史正在慢慢积累</h3>
+                  <p>超过 {{ system?.hotDays ?? 14 }} 天的访问记录将自动出现在这里。</p>
+                  <span class="empty-caption"
+                    ><CheckCircleFilled aria-hidden="true" /> 自动归档已开启</span
+                  >
+                </div></template
+              >
+              <div class="pagination">
+                <span>第 {{ archivePage }} 页</span>
+                <div class="pagination-buttons">
+                  <Button
+                    size="small"
+                    :disabled="archivePage <= 1 || archivesBusy"
+                    @click="
+                      archivePage--;
+                      loadArchives();
+                    "
+                    ><LeftOutlined aria-hidden="true" />上一页</Button
+                  ><Button
+                    size="small"
+                    :disabled="archiveRows.length < 50 || archivesBusy"
+                    @click="
+                      archivePage++;
+                      loadArchives();
+                    "
+                    >下一页<RightOutlined aria-hidden="true"
+                  /></Button>
+                </div>
+              </div>
+            </section>
+            <p class="footnote">
+              <InfoCircleOutlined aria-hidden="true" /> 历史访问可在统计页与近期数据一起查询。
+            </p>
+          </template>
+          <footer class="workspace-footer">
+            <span>shorten url</span
+            ><span>让连接保持简单 <ArrowUpOutlined aria-hidden="true" /></span>
+          </footer>
+        </main>
+      </div>
+      <Modal
+        v-model:open="editorOpen"
+        :title="editingId ? '编辑短链' : '创建短链'"
+        :footer="null"
+        :width="520"
+        :mask-closable="!mutating"
+        :keyboard="!mutating"
+        :closable="!mutating"
+        class="edit-dialog"
+      >
+        <p class="dialog-description">
+          {{
+            editingId
+              ? '更新链接信息，让每一次跳转抵达正确的目的地。'
+              : '粘贴目标网址，创建一个简单、好记的新入口。'
+          }}
+        </p>
+        <form class="editor-form" @submit.prevent="save">
+          <fieldset :disabled="mutating">
+            <div class="form-field">
+              <label for="target">目标网址 <span class="required">*</span></label
+              ><Input
+                id="target"
+                ref="targetInput"
+                v-model:value="form.target"
+                type="url"
+                placeholder="https://example.com/your-destination"
+                :maxlength="2048"
+                required
+                :disabled="mutating"
+                ><template #prefix
+                  ><GlobalOutlined aria-hidden="true" class="input-icon" /></template
+              ></Input>
+            </div>
+            <div class="form-field">
+              <label for="slug"
+                >自定义路径<small>{{ editingId ? '必填' : '可选' }}</small></label
+              ><Input
+                id="slug"
+                v-model:value="form.slug"
+                placeholder="your-next-idea"
+                :maxlength="256"
+                :required="!!editingId"
+                pattern="[A-Za-z0-9_\-]+(/[A-Za-z0-9_\-]+)*"
+                addon-before="/s/"
+                :disabled="mutating"
+                aria-describedby="slug-help"
+              />
+              <p id="slug-help" class="field-help">
+                {{ editingId ? '' : '留空将自动生成。' }}支持字母、数字、-、_
+                和多层路径，区分大小写。
+              </p>
+            </div>
+            <div class="form-field">
+              <label for="title">链接标题<small>可选</small></label
+              ><Input
+                id="title"
+                v-model:value="form.title"
+                :maxlength="120"
+                placeholder="例如：产品介绍、活动报名"
+                :disabled="mutating"
+              />
+              <p class="field-help">仅在工作台中显示，方便你识别和查找。</p>
+            </div>
+            <div class="link-preview">
+              <span><LinkOutlined aria-hidden="true" />短链预览</span
+              ><strong>{{ host }}/s/{{ form.slug || '自动生成' }}</strong>
+            </div>
+            <div class="enable-field">
+              <div>
+                <label for="link-enabled">启用短链</label>
+                <p>启用后，访问短链将跳转到目标网址</p>
+              </div>
+              <Switch
+                id="link-enabled"
+                v-model:checked="form.enabled"
+                :disabled="mutating"
+                aria-label="启用短链"
               />
             </div>
-            <div class="table-scroll">
-              <table>
-                <thead>
-                  <tr>
-                    <th>访问时间</th>
-                    <th>短链</th>
-                    <th>IP / 地区</th>
-                    <th>来源</th>
-                    <th>浏览器 / 设备</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="event in events" :key="event.id">
-                    <td class="nowrap">{{ time(event.occurred_at) }}</td>
-                    <td>/s/{{ event.slug }}</td>
-                    <td>
-                      <span class="mono">{{ event.ip || '未知' }}</span
-                      ><small class="cell-secondary">{{
-                        [event.country, event.region, event.city].filter(Boolean).join(' · ') ||
-                        '未知地区'
-                      }}</small>
-                    </td>
-                    <td>{{ event.referer || '直接访问' }}</td>
-                    <td>
-                      {{ event.browser }}<small class="cell-secondary">{{ event.device }}</small>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-            <div v-if="!events.length" class="compact-empty">
-              {{ detailBusy ? '正在加载明细…' : '该日暂无已记录的访问' }}
-            </div>
-            <div class="pagination">
-              <span>{{ detailBusy ? '正在读取…' : `第 ${eventPage} 页` }}</span>
-              <div>
-                <button
-                  :disabled="eventPage <= 1 || detailBusy"
-                  @click="
-                    eventPage--;
-                    loadEvents();
-                  "
-                >
-                  ← 上一页</button
-                ><button
-                  :disabled="!hasMore || detailBusy"
-                  @click="
-                    eventPage++;
-                    loadEvents();
-                  "
-                >
-                  下一页 →
-                </button>
-              </div>
-            </div>
-          </section>
-        </template>
-
-        <template v-if="tab === 'archives'">
-          <div class="page-heading">
-            <div>
-              <span class="eyebrow">A LITTLE HISTORY</span>
-              <h1>旧的访问，也有迹可循。</h1>
-              <p>超过 14 天的访问按日压缩归档，随时回看。</p>
-            </div>
-            <button class="secondary" :disabled="archivesBusy" @click="loadArchives()">
-              ↻ 刷新状态
-            </button>
-          </div>
-          <div class="overview-grid">
-            <section class="metric">
-              <span>归档检查间隔</span><strong>20<small>分钟</small></strong>
-              <p>自动分批处理，失败后继续重试</p>
-            </section>
-            <section class="metric">
-              <span>统计保留时间</span><strong>{{ system?.retentionDays }}<small>天</small></strong>
-              <p>含今天在内的 UTC 日期</p>
-            </section>
-            <section class="metric accent">
-              <span>待归档访问</span
-              ><strong>{{ number(system?.backlog ?? 0) }}<small>条</small></strong>
-              <p>源数据将在归档成功后清理</p>
-            </section>
-          </div>
-          <section class="panel maintenance-card">
-            <div>
-              <span class="status-dot"></span><strong>最近成功处理</strong>
-              <p>{{ time(system?.maintenance.last_success_at ?? null) }}</p>
-            </div>
-            <div>
-              <strong>最近检查</strong>
-              <p>{{ time(system?.maintenance.last_run_at ?? null) }}</p>
-            </div>
-            <p v-if="system?.maintenance.last_error" class="error">
-              {{ system.maintenance.last_error }}
-            </p>
-          </section>
-          <section class="panel">
-            <div class="panel-toolbar">
-              <h2>归档目录</h2>
-              <span class="muted">按 UTC 日期组织</span>
-            </div>
-            <div class="table-scroll">
-              <table>
-                <thead>
-                  <tr>
-                    <th>访问日期</th>
-                    <th>状态</th>
-                    <th>访问记录</th>
-                    <th>压缩体积</th>
-                    <th class="align-right">操作</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="day in archiveRows" :key="day.day">
-                    <td class="mono">{{ day.day }}</td>
-                    <td>
-                      <span
-                        class="status-pill"
-                        :class="day.status === 'cleaned' ? 'enabled' : 'disabled'"
-                        >{{ archiveLabel(day.status) }}</span
-                      >
-                    </td>
-                    <td>{{ number(day.row_count) }}</td>
-                    <td>{{ (day.byte_count / 1024).toFixed(1) }} KB</td>
-                    <td class="align-right">
-                      <button
-                        :disabled="!['published', 'cleaned'].includes(day.status)"
-                        @click="
-                          from = day.day;
-                          to = day.day;
-                          detailDay = day.day;
-                          linkId = '';
-                          navigate('stats');
-                        "
-                      >
-                        查看访问 →
-                      </button>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-            <div v-if="!archiveRows.length" class="empty-state">
-              <span class="empty-icon">▤</span>
-              <h3>历史会慢慢积累</h3>
-              <p>超过 14 天的访问将自动出现在这里。</p>
-            </div>
-            <div class="pagination">
-              <span>第 {{ archivePage }} 页</span>
-              <div>
-                <button
-                  :disabled="archivePage <= 1 || archivesBusy"
-                  @click="
-                    archivePage--;
-                    loadArchives();
-                  "
-                >
-                  ← 上一页</button
-                ><button
-                  :disabled="archiveRows.length < 50 || archivesBusy"
-                  @click="
-                    archivePage++;
-                    loadArchives();
-                  "
-                >
-                  下一页 →
-                </button>
-              </div>
-            </div>
-          </section>
-        </template>
-        <footer>shorten url <span>·</span> KEEP YOUR LINKS SIMPLE</footer>
-      </div>
-    </main>
-    <dialog ref="editDialog" class="edit-dialog" @cancel="!mutating || $event.preventDefault()">
-      <form @submit.prevent="save">
-        <div class="dialog-heading">
-          <div>
-            <span class="eyebrow">A NEW CONNECTION</span>
-            <h2>{{ editingId ? '编辑短链' : '创建短链' }}</h2>
-          </div>
-          <button type="button" aria-label="关闭" :disabled="mutating" @click="editDialog?.close()">
-            ×
-          </button>
-        </div>
-        <label for="target">目标网址 <span>*</span></label
-        ><input
-          id="target"
-          v-model="form.target"
-          type="url"
-          placeholder="https://example.com/your-destination"
-          maxlength="2048"
-          required
-        /><label for="slug">自定义路径</label>
-        <div class="input-prefix">
-          <span>/s/</span
-          ><input
-            id="slug"
-            v-model="form.slug"
-            placeholder="campaign/summer（留空自动生成）"
-            maxlength="256"
-            :required="!!editingId"
-            pattern="[A-Za-z0-9_\-]+(/[A-Za-z0-9_\-]+)*"
+          </fieldset>
+          <Alert
+            v-if="formError"
+            class="form-alert"
+            :message="formError"
+            type="error"
+            show-icon
+            role="alert"
           />
+          <div class="dialog-actions">
+            <Button :disabled="mutating" @click="editorOpen = false">取消</Button
+            ><Button type="primary" html-type="submit" :loading="mutating">{{
+              editingId ? '保存修改' : '创建短链'
+            }}</Button>
+          </div>
+        </form>
+      </Modal>
+      <Modal
+        v-model:open="deleteOpen"
+        title="删除这个短链？"
+        :footer="null"
+        :width="440"
+        :mask-closable="!mutating"
+        :keyboard="!mutating"
+        :closable="!mutating"
+      >
+        <div class="delete-link">
+          <span class="delete-icon"><DeleteOutlined aria-hidden="true" /></span>
+          <div>
+            <strong>/s/{{ deleting?.slug }}</strong
+            ><span>{{ deleting?.title || '未设置标题' }}</span>
+          </div>
         </div>
-        <p class="field-help">支持字母、数字、-、_ 和多层路径，区分大小写。</p>
-        <label for="title">标题 <small>可选，仅后台可见</small></label
-        ><input
-          id="title"
-          v-model="form.title"
-          maxlength="120"
-          placeholder="给这个链接写个备注"
-        /><label class="checkbox"
-          ><input v-model="form.enabled" type="checkbox" /> 启用这个短链</label
-        >
-        <p v-if="formError" class="error" role="alert">{{ formError }}</p>
+        <p class="delete-description">
+          删除后，短链将在最多 60 秒内停止跳转。已有的历史访问统计会继续保留。
+        </p>
+        <Alert
+          v-if="deleteError"
+          class="form-alert"
+          :message="deleteError"
+          type="error"
+          show-icon
+          role="alert"
+        />
         <div class="dialog-actions">
-          <button type="button" class="secondary" :disabled="mutating" @click="editDialog?.close()">
-            取消</button
-          ><button class="primary" :disabled="mutating">
-            {{ mutating ? '正在保存…' : '保存短链' }}
-          </button>
+          <Button :disabled="mutating" @click="deleteOpen = false">取消</Button
+          ><Button type="primary" danger :loading="mutating" @click="remove">确认删除</Button>
         </div>
-      </form>
-    </dialog>
-    <dialog ref="deleteDialog">
-      <div class="dialog-heading"><h2>删除这个短链？</h2></div>
-      <p class="muted">/s/{{ deleting?.slug }} 将在最多 60 秒内停止跳转，历史访问统计会保留。</p>
-      <div class="dialog-actions">
-        <button class="secondary" :disabled="mutating" @click="deleteDialog?.close()">取消</button
-        ><button class="danger-button" :disabled="mutating" @click="remove">
-          {{ mutating ? '正在删除…' : '确认删除' }}
-        </button>
-      </div>
-    </dialog>
-  </div>
-  <div v-if="notice" class="toast" role="status"><span>✓</span>{{ notice }}</div>
+      </Modal>
+    </div>
+    <Transition name="toast"
+      ><div v-if="notice" class="toast-message" role="status" aria-live="polite">
+        <CheckCircleFilled aria-hidden="true" />{{ notice }}
+      </div></Transition
+    >
+  </ConfigProvider>
 </template>

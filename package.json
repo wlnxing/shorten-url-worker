@@ -49,6 +49,8 @@
     "format": "prettier --write src tests admin *.json *.ts wrangler.jsonc README.md .github/workflows/ci.yml"
   },
   "dependencies": {
+    "@ant-design/icons-vue": "^7.0.1",
+    "ant-design-vue": "^4.2.6",
     "hono": "^4.13.13",
     "vue": "^3.5.26"
   },

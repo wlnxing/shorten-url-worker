@@ -26,5 +26,19 @@ export default defineConfig({
       '^/s(?:/|$)': workerProxy,
     },
   },
-  build: { outDir: 'dist', emptyOutDir: true, rollupOptions: { input: 'admin/index.html' } },
+  build: {
+    outDir: 'dist',
+    emptyOutDir: true,
+    rollupOptions: {
+      input: 'admin/index.html',
+      output: {
+        manualChunks(id) {
+          if (!id.includes('/node_modules/')) return;
+          if (id.includes('/@vue/') || id.includes('/vue/')) return 'vue';
+          if (id.includes('/ant-design-vue/') || id.includes('/@ant-design/')) return 'antd';
+          return 'vendor';
+        },
+      },
+    },
+  },
 });

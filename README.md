@@ -114,6 +114,7 @@ npm run deploy -- --secrets-file .env.production
 ## 文档
 
 - [开发指南](docs/development.md)：本地运行、项目结构、类型生成与验证。
+- [界面设计规范](docs/design.md)：Ant Design 主题、组件、响应式布局与交互约定。
 - [实现说明](docs/architecture.md)：缓存、统计口径、归档与故障恢复。
 - [配置与运维](docs/operations.md)：变量、密钥、容量和常见问题。
 - [OpenAPI 接口文档](docs/openapi.yaml)：鉴权、短链管理、统计与归档接口，可导入支持 OpenAPI 的工具。
