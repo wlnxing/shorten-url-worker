@@ -19,9 +19,25 @@ https://go.example.com/s/summer
 
 ## 部署
 
+### 一键部署
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/wlnxing/shorten-url-worker)
+
+准备好 Cloudflare 和 GitHub 账号，并先在 Cloudflare 中开通 R2，无需在本机安装开发环境。
+
+1. 点击上方按钮，连接 GitHub，按提示将项目复制到自己的账号。
+2. 确认 Worker、D1 数据库和 R2 存储桶的名称，按需选择 `MODE`：`economy` 为经济模式，`detailed` 为详细模式。
+3. 填写 `ADMIN_PASSWORD`（后台密码）和 `SESSION_SECRET`（至少 32 字符的随机字符串），使用不同的值并妥善保存。
+4. 保留自动识别的构建、部署命令，点击部署。Cloudflare 会创建并绑定存储资源，项目会自动初始化数据库、构建后台并发布。
+5. 部署完成后，打开提供的 `https://<Worker 名称>.<账号子域名>.workers.dev/admin/`，使用刚设置的密码登录。
+
+后续也可以绑定自己的域名。更新通过部署流程生成的仓库时，请保留其中的资源绑定和配置；更多说明见[配置与运维](docs/operations.md#一键部署与持续更新)。
+
+### 手动部署
+
 准备一个 Cloudflare 账号，开通 R2，并在本机安装 Node.js 22 或更新版本。下载项目后，在项目目录执行以下步骤。
 
-### 1. 安装依赖并创建存储
+#### 1. 安装依赖并创建存储
 
 ```bash
 npm ci
@@ -32,19 +48,19 @@ npx wrangler r2 bucket create shorten-url-archives
 
 已有数据库或存储桶时，可以复用对应资源。R2 使用 Standard 存储，保持桶私有。
 
-### 2. 配置资源与访问域名
+#### 2. 配置资源与访问域名
 
 编辑 [wrangler.jsonc](wrangler.jsonc)：
 
-- 将 `d1_databases[0].database_id` 替换为你刚创建的数据库 ID，确认数据库、R2 桶和 Worker 名称属于自己的账号。
-- 首次体验可将 `workers_dev` 设为 `true`，使用部署后提供的 `workers.dev` 地址。当前文件关闭了这个入口，需要主动开启或绑定自定义域名。
-- 使用自定义域名时，在顶层添加如下 `routes`，将示例域名换成 Cloudflare 账号下的域名；此时可保留 `workers_dev: false`。[域名配置说明](https://developers.cloudflare.com/workers/wrangler/configuration/#routes)
+- 将 `d1_databases[0].database_id` 的全零占位值替换为你刚创建的数据库 ID，确认数据库、R2 桶和 Worker 名称属于自己的账号。
+- 默认启用 `workers_dev`，可直接使用部署后提供的 `workers.dev` 地址。
+- 使用自定义域名时，在顶层添加如下 `routes`，将示例域名换成 Cloudflare 账号下的域名；若只使用自定义域名，可将 `workers_dev` 设为 `false`。[域名配置说明](https://developers.cloudflare.com/workers/wrangler/configuration/#routes)
 
 ```jsonc
 "routes": [{ "pattern": "go.example.com", "custom_domain": true }]
 ```
 
-### 3. 设置密码并部署
+#### 3. 设置密码并部署
 
 ```bash
 cp .dev.vars.example .env.production
@@ -53,13 +69,12 @@ cp .dev.vars.example .env.production
 编辑 `.env.production`，将 `ADMIN_PASSWORD` 换成管理员密码，将 `SESSION_SECRET` 换成至少 32 字符的随机字符串。此文件已被 Git 忽略，请妥善保存。
 
 ```bash
-npm run db:remote
 npm run deploy -- --secrets-file .env.production
 ```
 
-首次部署会一起上传代码和两个 Secret，详情见 [Cloudflare 密钥说明](https://developers.cloudflare.com/workers/configuration/secrets/#upload-secrets-alongside-code)。之后更新项目，执行 `npm ci`、`npm run db:remote` 和 `npm run deploy` 即可；未修改密钥时，无需再次传入密钥文件。
+部署命令会自动构建后台、应用数据库迁移并发布 Worker；首次部署会一起上传代码和两个 Secret，详情见 [Cloudflare 密钥说明](https://developers.cloudflare.com/workers/configuration/secrets/#upload-secrets-alongside-code)。之后更新项目，执行 `npm ci` 和 `npm run deploy` 即可；未修改密钥时，无需再次传入密钥文件。
 
-### 4. 登录后台
+#### 4. 登录后台
 
 打开 `https://你的域名/admin/`，使用刚设置的管理员密码登录。短链和后台使用同一个域名。
 

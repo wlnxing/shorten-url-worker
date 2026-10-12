@@ -3,7 +3,7 @@
   "name": "shorten-url-worker",
   "main": "src/worker/index.ts",
   "compatibility_date": "2026-10-01",
-  "workers_dev": false,
+  "workers_dev": true,
   "preview_urls": false,
   "assets": {
     "directory": "./dist",
@@ -23,7 +23,8 @@
     {
       "binding": "DB",
       "database_name": "shorten-url",
-      "database_id": "5c186228-91bf-465d-aa01-346c0e11c550",
+      // 一键部署会自动替换；手动部署时填写自己账号的数据库 ID。
+      "database_id": "00000000-0000-0000-0000-000000000000",
       "migrations_dir": "migrations",
     },
   ],

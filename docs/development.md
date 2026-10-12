@@ -56,6 +56,16 @@ npm run cf-typegen
 npm run cf-typegen -- --check
 ```
 
+## 一键部署约定
+
+部署入口遵循 [Cloudflare Deploy Buttons](https://developers.cloudflare.com/workers/platform/deploy-buttons/)：
+
+- `wrangler.jsonc` 包含完整的绑定声明、资源名称和数据库 ID 占位值，默认开启 `workers_dev`。一键部署流程负责创建资源并回填部署者的配置；源模板不保存个人数据库 ID。
+- `.dev.vars.example` 声明必填 Secret，值留空；`secrets.required` 声明相同名称，`package.json` 的 `cloudflare.bindings` 提供配置页面说明。
+- `npm run deploy` 依次构建、执行 `db:remote`、上传 Worker。D1 迁移必须使用绑定名 `DB`，不能写死数据库名称；失败时通过 `&&` 停止发布。
+- `npm run deploy -- --secrets-file .env.production` 将密钥文件参数传给最终的 Wrangler 发布命令；一键部署使用配置页面提供的 Secret。
+- 新增绑定、Secret 或变量时，同步更新以上文件、运维文档和生成类型。派生仓库需要将 README 按钮中的 GitHub 地址改为自己的公开仓库地址。
+
 ## 验证
 
 ```bash
@@ -63,7 +73,7 @@ npm run check
 npx wrangler deploy --dry-run
 ```
 
-`check` 执行类型检查、前端构建和集成测试；`--dry-run` 检查 Worker 打包与绑定，不发布新版本。检查文档格式时运行 `npx prettier --check README.md docs`。
+`check` 执行类型检查、前端构建和集成测试；`npx wrangler deploy --dry-run` 检查 Worker 打包与绑定，不发布新版本。不要用 `npm run deploy -- --dry-run` 代替：项目部署命令仍会先执行云端迁移。检查文档格式时运行 `npx prettier --check README.md docs`。
 
 集成测试在真实 workerd/Miniflare 运行时使用本地 D1、R2、Cache API 和限流绑定，覆盖：
 

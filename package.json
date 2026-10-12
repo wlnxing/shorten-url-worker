@@ -6,6 +6,34 @@
   "engines": {
     "node": ">=22"
   },
+  "cloudflare": {
+    "bindings": {
+      "DB": {
+        "description": "保存短链、最近 14 天的访问明细和归档目录，部署时自动初始化数据库。"
+      },
+      "ARCHIVES": {
+        "description": "保存压缩后的历史访问记录。请先在 Cloudflare 账号中开通 R2，并保持存储桶私有。"
+      },
+      "ADMIN_PASSWORD": {
+        "description": "必填：设置后台登录密码，建议使用密码管理器生成的长随机密码。"
+      },
+      "SESSION_SECRET": {
+        "description": "必填：设置至少 32 字符的随机字符串，用于签名登录会话；请使用与管理员密码不同的值。"
+      },
+      "MODE": {
+        "description": "economy：缓存短链且不记录新访问；detailed：记录访问并在后台展示统计。两种模式均可管理短链。"
+      },
+      "STATS_RETENTION_DAYS": {
+        "description": "统计保留天数，包含今天，默认 180；允许 15～36500。"
+      },
+      "ARCHIVE_BATCH_SIZE": {
+        "description": "单次上传的最多记录数，默认 500；允许 1～500。"
+      },
+      "ARCHIVE_MAX_KB": {
+        "description": "单个归档分片的未压缩大小上限，单位 KB，默认 512；允许 16～16384，1 KB = 1024 字节。"
+      }
+    }
+  },
   "scripts": {
     "dev": "concurrently -k 'npm:dev:worker' 'npm:dev:web'",
     "dev:worker": "wrangler dev --port 8787",
@@ -16,7 +44,7 @@
     "test": "vitest run",
     "db:local": "wrangler d1 migrations apply DB --local",
     "db:remote": "wrangler d1 migrations apply DB --remote",
-    "deploy": "npm run build && wrangler deploy",
+    "deploy": "npm run build && npm run db:remote && wrangler deploy",
     "check": "npm run build && npm test",
     "format": "prettier --write src tests admin *.json *.ts wrangler.jsonc README.md .github/workflows/ci.yml"
   },

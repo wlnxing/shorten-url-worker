@@ -21,7 +21,7 @@
 
 ## 密钥与会话
 
-首次部署使用 [README](../README.md#3-设置密码并部署) 的 `--secrets-file` 流程，一并提供代码和必填 Secret。更新已存在 Worker 的密码或签名密钥可以运行：
+一键部署时在配置页面填写两个 Secret；手动首次部署使用 [README](../README.md#3-设置密码并部署) 的 `--secrets-file` 流程，一并提供代码和必填 Secret。更新已存在 Worker 的密码或签名密钥可以运行：
 
 ```bash
 npx wrangler secret put ADMIN_PASSWORD
@@ -31,6 +31,18 @@ npx wrangler secret put SESSION_SECRET
 会话最长有效 12 小时，修改任一 Secret 都会使旧会话失效。登录以来源 IP 限流，每 60 秒最多 5 次尝试；限流绑定的 `namespace_id` 应与同一账号的其他应用区分。
 
 会话 Cookie 为 `__Host-short_session`，使用 `HttpOnly`、`Secure`、`SameSite=Strict` 和根路径。写接口要求同源 `Origin` 和 `application/json` 对象，请求体上限为 8192 字节。管理接口和归档下载都不允许缓存。
+
+## 一键部署与持续更新
+
+README 的按钮使用 [Deploy to Cloudflare](https://developers.cloudflare.com/workers/platform/deploy-buttons/)，会将公开的源仓库复制到部署者的 GitHub 账号，并通过 Workers Builds 构建和部署。账号需先开通 R2。
+
+部署页面从 `wrangler.jsonc` 读取 D1、R2 和普通变量，从 `.dev.vars.example` 读取两个 Secret 名称，并展示 `package.json` 中 `cloudflare.bindings` 的中文说明。Secret 示例留空，需要部署者自行填写。
+
+Cloudflare 会创建用户选择的资源并将新 ID、名称及变量写入生成仓库的配置；全零 `database_id` 仅是源模板中的占位值。数据库迁移通过绑定名 `DB` 执行，因此可在部署页面自定义数据库名称。
+
+构建命令保留 `npm run build`，部署命令保留 `npm run deploy`。后者也包含构建步骤，便于本地直接部署，随后应用 D1 迁移，成功后才上传 Worker。迁移失败会中止发布；重复部署仅执行未应用的迁移，不会重建表或清空数据。单独使用 `npx wrangler deploy` 会跳过数据库迁移，首次部署请使用项目提供的部署命令。
+
+后续向生成仓库的已连接分支推送更新，会触发 Workers Builds 重新部署。合并上游更新时保留自己的数据库 ID、R2 桶名、域名和变量；Secret 由 Cloudflare 管理，不应提交到仓库。绑定实现与构建约定见[开发指南](development.md#一键部署约定)。
 
 ## 域名与部署更新
 
@@ -42,7 +54,6 @@ npx wrangler secret put SESSION_SECRET
 
 ```bash
 npm ci
-npm run db:remote
 npm run deploy
 ```
 
@@ -66,7 +77,11 @@ npm run deploy
 
 ### 部署后无法打开后台
 
-确认已启用 `workers.dev` 或绑定自定义域名，并访问 `/admin/`。当前配置可能关闭默认域名，只有 Worker 部署成功并不代表已有公开访问入口。
+模板默认启用 `workers.dev`。确认已访问 `/admin/`；若自行关闭了默认域名，需要绑定自定义域名并将请求交给该 Worker。
+
+### 一键部署失败
+
+先确认账号已开通 R2、两个 Secret 均已填写，且 `SESSION_SECRET` 至少 32 字符。检查生成仓库中 `database_id` 已被替换为当前账号的实际 ID，构建命令为 `npm run build`，部署命令为 `npm run deploy`。如果日志停在 D1 迁移阶段，先解决该错误，再重试部署，无需删除已创建的数据库。
 
 ### 修改短链后仍跳转到旧地址
 

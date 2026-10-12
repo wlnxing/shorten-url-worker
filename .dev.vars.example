@@ -1,3 +1,5 @@
-# Copy to .dev.vars and replace both values before local development.
-ADMIN_PASSWORD=replace-with-a-long-random-password
-SESSION_SECRET=replace-with-at-least-32-random-characters
+# 一键部署会提示填写以下两个 Secret，不提供默认密码。
+# 本地开发复制为 .dev.vars，手动部署复制为 .env.production，填写后再运行。
+ADMIN_PASSWORD=
+# 至少 32 字符的随机字符串，与管理员密码不同。
+SESSION_SECRET=
