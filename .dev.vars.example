@@ -1,0 +1,3 @@
+# Copy to .dev.vars and replace both values before local development.
+ADMIN_PASSWORD=replace-with-a-long-random-password
+SESSION_SECRET=replace-with-at-least-32-random-characters
