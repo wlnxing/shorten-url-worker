@@ -1,0 +1,1446 @@
+openapi: 3.1.0
+info:
+  title: shorten url · 短链系统 API
+  version: 1.0.0
+  description: |
+    管理 API 使用登录后签发的 Cookie。所有 POST、PUT、DELETE 必须提供同源 Origin 和 application/json 对象，DELETE 也需发送 {}，请求体最多 8192 字节。
+    两种运行模式都支持管理和查询历史统计。日期使用 UTC，时间戳单位为毫秒。管理响应不缓存，错误体统一为 {"error":"说明"}。
+    OpenAPI 的 /s/{slug} 模板描述单层短码；多层路径请直接访问 /s/campaign/summer，不要编码路径分隔符。
+servers:
+  - url: https://{hostname}
+    description: 替换为部署后的 Worker 域名。
+    variables:
+      hostname:
+        default: short.example.com
+        description: 自定义域名或 workers.dev 主机名，不含协议和路径。
+  - url: http://localhost:8787
+    description: Wrangler 本地开发服务。
+tags:
+  - name: 认证
+    description: 管理员登录和会话。
+  - name: 短链
+    description: 两种模式共用的短链管理。
+  - name: 统计
+    description: 运行状态、近期汇总与访问明细。
+  - name: 归档
+    description: 历史目录及私有 R2 下载。
+  - name: 跳转
+    description: 无需登录的公开短链访问。
+security:
+  - SessionCookie: []
+paths:
+  /api/auth/login:
+    post:
+      tags:
+        - 认证
+      operationId: login
+      summary: 管理员登录
+      description: 每来源 IP 每 60 秒最多尝试 5 次。成功后设置签名 Cookie，有效期 12 小时；修改任一 Secret 使已有会话失效。
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginInput'
+            example:
+              password: your-admin-password
+      responses:
+        '200':
+          description: 登录成功。
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/ApiCacheControl'
+            Set-Cookie:
+              $ref: '#/components/headers/SetCookie'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+              example:
+                ok: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/auth/logout:
+    post:
+      tags:
+        - 认证
+      operationId: logout
+      summary: 退出登录
+      description: 清除当前 Cookie；无需有效会话。必须提交 JSON 对象，例如 {}。
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmptyInput'
+            example: {}
+      responses:
+        '200':
+          description: Cookie 已清除。
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/ApiCacheControl'
+            Set-Cookie:
+              $ref: '#/components/headers/SetCookie'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+              example:
+                ok: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/auth/session:
+    get:
+      tags:
+        - 认证
+      operationId: getSession
+      summary: 检查会话
+      description: 验证 Cookie 签名与有效期。
+      responses:
+        '200':
+          description: 会话有效。
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/ApiCacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+              example:
+                authenticated: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/admin/links:
+    get:
+      tags:
+        - 短链
+      operationId: listLinks
+      summary: 分页搜索短链
+      description: 按 created_at 降序、id 升序返回。默认排除已删除短链。
+      parameters:
+        - $ref: '#/components/parameters/LinkPage'
+        - $ref: '#/components/parameters/LinkSize'
+        - name: q
+          in: query
+          required: false
+          description: 对路径、标题及目标网址进行包含匹配；只使用前 256 字符，% 和 _ 按字面搜索。
+          schema:
+            type: string
+        - name: includeDeleted
+          in: query
+          required: false
+          description: 传 true 可包含墓碑，用于筛选历史统计。
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: 短链列表及匹配总数。
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/ApiCacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LinkPage'
+              example:
+                items:
+                  - id: d3f36f57-b214-43ca-a2c2-bc4259ee0bed
+                    slug: campaign/summer
+                    target: https://example.com/articles/welcome?from=short
+                    title: 夏日活动
+                    enabled: 1
+                    created_at: 1790812800000
+                    updated_at: 1790812800000
+                    deleted_at: null
+                total: 1
+                page: 1
+                size: 20
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    post:
+      tags:
+        - 短链
+      operationId: createLink
+      summary: 创建短链
+      description: 自定义路径省略或为空时自动生成。新建/变更最多 60 秒在所有节点生效。
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateLinkInput'
+            example:
+              slug: campaign/summer
+              target: https://example.com/articles/welcome?from=short
+              title: 夏日活动
+              enabled: true
+      responses:
+        '201':
+          description: 已创建。
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/ApiCacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Link'
+              example:
+                id: d3f36f57-b214-43ca-a2c2-bc4259ee0bed
+                slug: campaign/summer
+                target: https://example.com/articles/welcome?from=short
+                title: 夏日活动
+                enabled: 1
+                created_at: 1790812800000
+                updated_at: 1790812800000
+                deleted_at: null
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/admin/links/{id}:
+    parameters:
+      - $ref: '#/components/parameters/LinkId'
+    get:
+      tags:
+        - 短链
+      operationId: getLink
+      summary: 读取短链
+      description: 仅返回未删除的短链，停用短链仍可读取。
+      responses:
+        '200':
+          description: 短链详情。
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/ApiCacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Link'
+              example:
+                id: d3f36f57-b214-43ca-a2c2-bc4259ee0bed
+                slug: campaign/summer
+                target: https://example.com/articles/welcome?from=short
+                title: 夏日活动
+                enabled: 1
+                created_at: 1790812800000
+                updated_at: 1790812800000
+                deleted_at: null
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    put:
+      tags:
+        - 短链
+      operationId: updateLink
+      summary: 更新短链
+      description: 完整提交 slug 和 target。title 省略时清空，enabled 省略时启用。修改路径保留短链 ID 和历史统计，最多 60 秒生效。
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateLinkInput'
+            example:
+              slug: campaign/summer
+              target: https://example.com/articles/welcome?from=short
+              title: 夏日活动
+              enabled: true
+      responses:
+        '200':
+          description: 更新后的短链。
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/ApiCacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Link'
+              example:
+                id: d3f36f57-b214-43ca-a2c2-bc4259ee0bed
+                slug: campaign/summer
+                target: https://example.com/articles/welcome?from=short
+                title: 夏日活动
+                enabled: 1
+                created_at: 1790812800000
+                updated_at: 1790812800000
+                deleted_at: null
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      tags:
+        - 短链
+      operationId: deleteLink
+      summary: 删除短链
+      description: 软删除，最多 60 秒停止跳转，历史统计保留。路径可再次使用，新链接获得新 ID。重复删除返回 404。
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmptyInput'
+            example: {}
+      responses:
+        '200':
+          description: 已删除。
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/ApiCacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+              example:
+                ok: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/admin/status:
+    get:
+      tags:
+        - 统计
+      operationId: getSystemStatus
+      summary: 读取运行与维护状态
+      description: 返回当前模式、保留期限、归档限制与积压。archiveMaxKb 的单位为 KB，1 KB = 1024 字节。
+      responses:
+        '200':
+          description: 当前状态。
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/ApiCacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemStatus'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/admin/stats:
+    get:
+      tags:
+        - 统计
+      operationId: getStats
+      summary: 查询近期汇总和历史数据来源
+      description:
+        返回 D1 中尚未归档的统计，以及范围内已发布归档的日期。此接口不在服务端解压 R2；完整统计需下载 archives 对应分片，按 link_id 筛选后聚合。日期范围包含起止日期；from
+        可被保留期限裁剪，超过保留期或跨度超限返回 400。
+      parameters:
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - $ref: '#/components/parameters/StatsLinkId'
+      responses:
+        '200':
+          description: D1 汇总及 R2 日期目录。
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/ApiCacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatsResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/admin/stats/events:
+    get:
+      tags:
+        - 统计
+      operationId: listVisitEvents
+      summary: 按日查询近期访问明细
+      description: 按 occurred_at、id 双降序返回。将 nextCursor 原样用于下一页，并保持日期和短链筛选相同。该日已发布归档时返回 409，客户端应改读归档。
+      parameters:
+        - name: day
+          in: query
+          required: false
+          description: 查询的 UTC 日期，默认今天；必须在保留期限内且不能在未来。
+          schema:
+            $ref: '#/components/schemas/UtcDay'
+        - $ref: '#/components/parameters/StatsLinkId'
+        - name: size
+          in: query
+          required: false
+          description: 每页明细数。
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: cursor
+          in: query
+          required: false
+          description: 上页返回的 nextCursor，格式 occurred_at:id；首次请求省略。
+          schema:
+            type: string
+            pattern: ^[0-9]+:[0-9]+$
+            examples:
+              - 1790812801000:123
+      responses:
+        '200':
+          description: 访问明细及下一页游标。
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/ApiCacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VisitPage'
+        '409':
+          description: 日期已归档，应读取该日 R2 清单和分片。
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/ApiCacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: 该日数据已归档，请重新加载归档数据
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/admin/archives:
+    get:
+      tags:
+        - 归档
+      operationId: listArchives
+      summary: 分页列出归档日期
+      description: 每页固定 50 个日期，按日期降序；包含上传中、已发布、清理完成或删除中的目录，仅返回保留期限内日期。少于 50 条时没有下一页，否则可继续请求下一页确认。
+      parameters:
+        - name: page
+          in: query
+          required: false
+          description: 页码，从 1 开始。
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 10000
+            default: 1
+      responses:
+        '200':
+          description: 归档日期列表。
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/ApiCacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArchiveList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/admin/archives/{day}:
+    parameters:
+      - $ref: '#/components/parameters/ArchiveDay'
+    get:
+      tags:
+        - 归档
+      operationId: getArchiveManifest
+      summary: 获取已发布日期的分片清单
+      description:
+        仅 published/cleaned 日期可读取。分片按 part 升序，每页最多 100 个；首次请求省略 after，后续使用响应 next。after 是包含边界，查询
+        part >= after；不要手动对 next 加一。
+      parameters:
+        - name: after
+          in: query
+          required: false
+          description: 下一页首个分片编号。首次必须省略，显式 after=0 会被拒绝。
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000000
+      responses:
+        '200':
+          description: 日目录、已就绪分片和后续页游标。
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/ApiCacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArchiveManifest'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '410':
+          $ref: '#/components/responses/Gone'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/admin/archives/{day}/parts/{part}:
+    parameters:
+      - $ref: '#/components/parameters/ArchiveDay'
+      - name: part
+        in: path
+        required: true
+        description: 清单中的分片编号，从 0 开始。
+        schema:
+          type: integer
+          minimum: 0
+          maximum: 9007199254740991
+    get:
+      tags:
+        - 归档
+      operationId: downloadArchivePart
+      summary: 下载 gzip 归档分片
+      description:
+        从私有 R2 读取原始 gzip 字节。响应不设置 Content-Encoding，客户端需自行校验并解压。SHA-256 和 Content-Length 均对应压缩字节。解压后为
+        UTF-8 NDJSON：第一行 ArchiveHeader，其余每行 Visit；按清单核对行数。
+      responses:
+        '200':
+          description: gzip 文件。
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/ApiCacheControl'
+            X-Content-SHA256:
+              description: 压缩文件的 SHA-256，小写十六进制。
+              schema:
+                type: string
+                pattern: ^[0-9a-f]{64}$
+            Content-Length:
+              description: 压缩文件字节数。
+              schema:
+                type: integer
+                minimum: 1
+          content:
+            application/gzip:
+              schema:
+                type: string
+                format: binary
+          x-ndjson-header-schema:
+            $ref: '#/components/schemas/ArchiveHeader'
+          x-ndjson-record-schema:
+            $ref: '#/components/schemas/Visit'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '410':
+          $ref: '#/components/responses/Gone'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /s/{slug}:
+    description: 此 OpenAPI 模板描述单层短码；Worker 的实际路由是 /s/*，多层路径如 /s/campaign/summer 也适用相同跳转语义。多层路径中的 / 必须保留原样。仅支持 GET 和 HEAD，其他方法返回 405 及 Allow：GET, HEAD。
+    parameters:
+      - $ref: '#/components/parameters/Slug'
+    get:
+      tags:
+        - 跳转
+      operationId: redirectShortLink
+      summary: 访问短链
+      description: 详细模式异步记录一次访问，包括缓存命中；经济模式不记录。目标查询参数保留，短链请求的查询参数不追加。
+      security: []
+      responses:
+        '302':
+          $ref: '#/components/responses/Redirect'
+        '404':
+          $ref: '#/components/responses/MissingShortLink'
+        '503':
+          $ref: '#/components/responses/RedirectUnavailable'
+    head:
+      tags:
+        - 跳转
+      operationId: headShortLink
+      summary: 检查短链跳转
+      description: 返回与 GET 相同的状态和 Location，不返回响应体，不记录访问。
+      security: []
+      responses:
+        '302':
+          $ref: '#/components/responses/Redirect'
+        '404':
+          description: 短链无效或不可用，无响应体。
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/RedirectCacheControl'
+        '503':
+          description: 服务不可用，无响应体。
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/RedirectCacheControl'
+components:
+  securitySchemes:
+    SessionCookie:
+      type: apiKey
+      in: cookie
+      name: __Host-short_session
+      description: 由 POST /api/auth/login 设置；Secure、HttpOnly、SameSite=Strict，有效期 12 小时。浏览器接口调用需同源。
+  parameters:
+    Origin:
+      name: Origin
+      in: header
+      required: true
+      description: 必须等于请求服务的 origin（协议、主机及可选端口，无尾部 /），例如 https://short.example.com；本地为 http://localhost:8787。
+      schema:
+        type: string
+        format: uri
+    LinkId:
+      name: id
+      in: path
+      required: true
+      description: 短链 ID，通常为创建时返回的 UUID；不存在或已删除时返回 404。
+      schema:
+        type: string
+    StatsLinkId:
+      name: linkId
+      in: query
+      required: false
+      description: 按稳定短链 ID 筛选，可查询已删除短链；省略或空字符串表示全部。
+      schema:
+        type: string
+        maxLength: 64
+    ArchiveDay:
+      name: day
+      in: path
+      required: true
+      description: 归档的 UTC 日期。
+      schema:
+        $ref: '#/components/schemas/UtcDay'
+    LinkPage:
+      name: page
+      in: query
+      required: false
+      description: 页码，从 1 开始。
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100000
+        default: 1
+    LinkSize:
+      name: size
+      in: query
+      required: false
+      description: 每页短链数。
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    From:
+      name: from
+      in: query
+      required: false
+      description: 开始 UTC 日期，包含该日；默认今天前 6 天，早于保留边界时截到 earliestDay。
+      schema:
+        $ref: '#/components/schemas/UtcDay'
+    To:
+      name: to
+      in: query
+      required: false
+      description: 结束 UTC 日期，包含该日；默认今天。起止跨度最多 366 个日期，不允许未来日期。
+      schema:
+        $ref: '#/components/schemas/UtcDay'
+    Slug:
+      name: slug
+      in: path
+      required: true
+      description: 本模板描述不含 / 的单层短码；多层路径调用实际 /s/campaign/summer，保留 / 分隔符，不能编码为 %2F。
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 256
+        pattern: ^[A-Za-z0-9_-]+$
+        examples:
+          - summer
+  headers:
+    ApiCacheControl:
+      description: 管理响应及错误不缓存。
+      schema:
+        type: string
+        enum:
+          - private, no-store
+          - no-store
+    RedirectCacheControl:
+      description: 禁止浏览器缓存跳转响应。
+      schema:
+        type: string
+        const: no-store
+    Location:
+      description: 规范化后的目标网址；不追加短链请求的查询参数。
+      schema:
+        type: string
+        format: uri
+    SetCookie:
+      description: 设置或清除 __Host-short_session。登录时带 Path=/、Secure、HttpOnly、SameSite=Strict，Max-Age=43200。
+      schema:
+        type: string
+  responses:
+    BadRequest:
+      description: JSON 对象、字段、日期范围或分页参数无效。
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/ApiCacheControl'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: 分页参数无效
+    Unauthorized:
+      description: 密码错误，或登录会话缺失、无效、过期。
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/ApiCacheControl'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: 请先登录，或重新登录已过期的会话
+    Forbidden:
+      description: Origin 缺失或与请求 origin 不一致。
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/ApiCacheControl'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: 仅允许同源操作
+    NotFound:
+      description: 短链不存在或已删除，或归档尚未发布/分片不存在。
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/ApiCacheControl'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Conflict:
+      description: 自定义路径已被占用。
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/ApiCacheControl'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: 该短链路径已被使用
+    Gone:
+      description: 归档日期超过总保留期限。
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/ApiCacheControl'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: 归档已超过保留期限
+    TooLarge:
+      description: 请求体超过 8192 字节。
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/ApiCacheControl'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: 请求内容过大
+    UnsupportedMediaType:
+      description: 写请求未使用 application/json。
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/ApiCacheControl'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: 请求须使用 application/json
+    TooManyRequests:
+      description: 同一来源 IP 的登录尝试过于频繁。
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/ApiCacheControl'
+        Retry-After:
+          description: 等待秒数。
+          schema:
+            type: integer
+            const: 60
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: 登录尝试过于频繁，请一分钟后重试
+    Unavailable:
+      description: 配置无效、密钥未配置、存储不可用或其他服务错误。
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/ApiCacheControl'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Redirect:
+      description: 跳转到目标网址；不返回响应体。
+      headers:
+        Location:
+          $ref: '#/components/headers/Location'
+        Cache-Control:
+          $ref: '#/components/headers/RedirectCacheControl'
+    MissingShortLink:
+      description: 短链路径无效、不存在、停用或已删除。
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/RedirectCacheControl'
+      content:
+        text/plain:
+          schema:
+            type: string
+          example: 短链不存在或已停用
+    RedirectUnavailable:
+      description: 缓存未命中且 D1 查询失败时为纯文本；配置错误等由全局处理器返回 JSON。
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/RedirectCacheControl'
+      content:
+        text/plain:
+          schema:
+            type: string
+          example: 短链服务暂时不可用，请稍后重试
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+  schemas:
+    Error:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string
+          description: 可供界面展示的错误信息。
+      examples:
+        - error: 短链不存在
+    Ok:
+      type: object
+      required:
+        - ok
+      properties:
+        ok:
+          type: boolean
+          const: true
+    Session:
+      type: object
+      required:
+        - authenticated
+      properties:
+        authenticated:
+          type: boolean
+          const: true
+    Timestamp:
+      type: integer
+      format: int64
+      minimum: 0
+      description: UTC Unix 毫秒时间戳。
+    NullableTimestamp:
+      type:
+        - integer
+        - 'null'
+      format: int64
+      minimum: 0
+      description: UTC Unix 毫秒时间戳。
+    UtcDay:
+      type: string
+      format: date
+      description: UTC 日期，YYYY-MM-DD。
+      examples:
+        - '2026-10-01'
+    Slug:
+      type: string
+      description: 不含 /s/ 前缀，区分大小写，允许多层路径。
+      minLength: 1
+      maxLength: 256
+      pattern: ^[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*$
+      examples:
+        - campaign/summer
+    TargetInput:
+      type: string
+      description: 完整 HTTP/HTTPS 网址；禁止空白、控制字符、账号密码及本站 /s 或 /s/* 目标。按输入长度校验后规范化存储。
+      format: uri
+      maxLength: 2048
+      pattern: ^[Hh][Tt][Tt][Pp][Ss]?://
+      examples:
+        - https://example.com/articles/welcome?from=short
+    LoginInput:
+      type: object
+      required:
+        - password
+      properties:
+        password:
+          type: string
+          description: 管理员密码，对应 ADMIN_PASSWORD Secret。
+          format: password
+      additionalProperties: true
+    CreateLinkInput:
+      type: object
+      required:
+        - target
+      properties:
+        slug:
+          description: 省略或传空字符串时生成 8 位短码；自定义值不含 /s/ 前缀。
+          anyOf:
+            - $ref: '#/components/schemas/Slug'
+            - type: string
+              maxLength: 0
+        target:
+          $ref: '#/components/schemas/TargetInput'
+        title:
+          type: string
+          description: 仅后台可见；保存时去除首尾空白。
+          maxLength: 120
+          default: ''
+        enabled:
+          type: boolean
+          default: true
+      additionalProperties: true
+    UpdateLinkInput:
+      type: object
+      required:
+        - slug
+        - target
+      properties:
+        slug:
+          $ref: '#/components/schemas/Slug'
+        target:
+          $ref: '#/components/schemas/TargetInput'
+        title:
+          type: string
+          description: 仅后台可见；保存时去除首尾空白。
+          maxLength: 120
+          default: ''
+        enabled:
+          type: boolean
+          default: true
+      description: 完整更新。title 省略时重置为空，enabled 省略时重置为 true；不是局部 PATCH。
+      additionalProperties: true
+    EmptyInput:
+      type: object
+      description: 无业务字段，传入空 JSON 对象 {}。多余字段会被忽略。
+      example: {}
+    Link:
+      type: object
+      required:
+        - id
+        - slug
+        - target
+        - title
+        - enabled
+        - created_at
+        - updated_at
+        - deleted_at
+      properties:
+        id:
+          type: string
+          description: 短链的稳定 ID；路径复用时生成新 ID。
+          format: uuid
+        slug:
+          $ref: '#/components/schemas/Slug'
+        target:
+          type: string
+          description: 规范化后的目标网址。
+          format: uri
+        title:
+          type: string
+          maxLength: 120
+        enabled:
+          type: integer
+          enum:
+            - 0
+            - 1
+          description: 响应为整数：1 启用，0 停用；写请求使用布尔值。
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+        updated_at:
+          $ref: '#/components/schemas/Timestamp'
+        deleted_at:
+          $ref: '#/components/schemas/NullableTimestamp'
+      examples:
+        - id: d3f36f57-b214-43ca-a2c2-bc4259ee0bed
+          slug: campaign/summer
+          target: https://example.com/articles/welcome?from=short
+          title: 夏日活动
+          enabled: 1
+          created_at: 1790812800000
+          updated_at: 1790812800000
+          deleted_at: null
+    LinkPage:
+      type: object
+      required:
+        - items
+        - total
+        - page
+        - size
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Link'
+          maxItems: 100
+        total:
+          type: integer
+          minimum: 0
+          description: 当前搜索条件下匹配的总数。
+        page:
+          type: integer
+          minimum: 1
+        size:
+          type: integer
+          minimum: 1
+          maximum: 100
+    Visit:
+      type: object
+      required:
+        - id
+        - link_id
+        - slug
+        - occurred_at
+        - ip
+        - country
+        - region
+        - city
+        - referer
+        - ua
+        - browser
+        - device
+        - visitor_key
+      properties:
+        id:
+          type: integer
+          minimum: 1
+          format: int64
+          description: 自增事件 ID。
+        link_id:
+          type: string
+          description: 访问发生时的短链 ID；删除或改名不会重写。
+        slug:
+          $ref: '#/components/schemas/Slug'
+        occurred_at:
+          $ref: '#/components/schemas/Timestamp'
+        ip:
+          type: string
+          description: 原始访问 IP；缺失时为空。
+          maxLength: 45
+        country:
+          type: string
+          description: Cloudflare 地区代码；未知时为空。
+          maxLength: 8
+        region:
+          type: string
+          maxLength: 80
+        city:
+          type: string
+          maxLength: 80
+        referer:
+          type: string
+          description: 来源 hostname，不含路径或查询参数；直接访问时为空。
+          maxLength: 253
+        ua:
+          type: string
+          description: 截断后的 User-Agent。
+          maxLength: 512
+        browser:
+          type: string
+          description: 轻量规则识别的浏览器。
+        device:
+          type: string
+          description: 例如桌面、手机、平板、机器人。
+        visitor_key:
+          type:
+            - string
+            - 'null'
+          description: IP 与 User-Agent 的 SHA-256 十六进制去重键；无 IP 时为 null。
+          pattern: ^[0-9a-f]{64}$
+    VisitPage:
+      type: object
+      required:
+        - items
+        - nextCursor
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Visit'
+          maxItems: 100
+        nextCursor:
+          type:
+            - string
+            - 'null'
+          pattern: ^[0-9]+:[0-9]+$
+          description: 下一页游标 occurred_at:id；没有更多记录时为 null。
+    DailyStat:
+      type: object
+      required:
+        - day
+        - pv
+        - uv
+      properties:
+        day:
+          $ref: '#/components/schemas/UtcDay'
+        pv:
+          type: integer
+          minimum: 0
+        uv:
+          type: integer
+          minimum: 0
+          description: 该 UTC 日内按 IP + User-Agent 去重，不能跨日直接相加作为独立访客数。
+    Breakdown:
+      type: object
+      required:
+        - name
+        - count
+      properties:
+        name:
+          type: string
+          description: 分组值；空字符串表示未知或直接访问。
+        count:
+          type: integer
+          minimum: 0
+    ArchiveDay:
+      type: object
+      required:
+        - day
+        - status
+        - cursor_time
+        - cursor_id
+        - part_count
+        - row_count
+        - byte_count
+        - published_at
+        - created_at
+      properties:
+        day:
+          $ref: '#/components/schemas/UtcDay'
+        status:
+          type: string
+          enum:
+            - uploading
+            - published
+            - cleaned
+            - deleting
+          description: 上传中、已发布待清理、源记录已清理、过期删除中。
+        cursor_time:
+          $ref: '#/components/schemas/Timestamp'
+        cursor_id:
+          type: integer
+          minimum: 0
+          format: int64
+        part_count:
+          type: integer
+          minimum: 0
+        row_count:
+          type: integer
+          minimum: 0
+        byte_count:
+          type: integer
+          minimum: 0
+          description: 已提交分片的 gzip 压缩字节总数。
+        published_at:
+          $ref: '#/components/schemas/NullableTimestamp'
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+    ArchivePart:
+      type: object
+      required:
+        - id
+        - day
+        - part
+        - status
+        - first_time
+        - first_id
+        - last_time
+        - last_id
+        - row_count
+        - byte_count
+        - sha256
+      properties:
+        id:
+          type: string
+          description: R2 对象键。
+          examples:
+            - analytics/v1/2026/10/01/part-000000.jsonl.gz
+        day:
+          $ref: '#/components/schemas/UtcDay'
+        part:
+          type: integer
+          minimum: 0
+          description: 从 0 开始的分片编号。
+        status:
+          type: string
+          enum:
+            - pending
+            - ready
+          description: 清单接口只返回 ready。
+        first_time:
+          $ref: '#/components/schemas/Timestamp'
+        first_id:
+          type: integer
+          minimum: 1
+          format: int64
+        last_time:
+          $ref: '#/components/schemas/Timestamp'
+        last_id:
+          type: integer
+          minimum: 1
+          format: int64
+        row_count:
+          type: integer
+          minimum: 1
+          maximum: 500
+        byte_count:
+          type: integer
+          minimum: 1
+          description: gzip 文件的实际字节数。
+        sha256:
+          type: string
+          description: gzip 文件原始字节的 SHA-256，小写十六进制。
+          pattern: ^[0-9a-f]{64}$
+    ArchiveHeader:
+      type: object
+      required:
+        - schemaVersion
+        - day
+      properties:
+        schemaVersion:
+          type: integer
+          const: 1
+        day:
+          $ref: '#/components/schemas/UtcDay'
+      description: gzip 解压后的 NDJSON 第一行；其余每行符合 Visit。
+    ArchiveList:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ArchiveDay'
+          maxItems: 50
+    ArchiveManifest:
+      type: object
+      required:
+        - day
+        - parts
+        - next
+      properties:
+        day:
+          $ref: '#/components/schemas/ArchiveDay'
+        parts:
+          type: array
+          items:
+            $ref: '#/components/schemas/ArchivePart'
+          maxItems: 100
+        next:
+          type:
+            - integer
+            - 'null'
+          minimum: 1
+          description: 下一页首个分片编号，原样传给 after；无下一页时为 null。
+    StatsResponse:
+      type: object
+      required:
+        - from
+        - to
+        - archives
+        - daily
+        - countries
+        - referers
+        - browsers
+        - devices
+      properties:
+        from:
+          $ref: '#/components/schemas/UtcDay'
+        to:
+          $ref: '#/components/schemas/UtcDay'
+        archives:
+          type: array
+          items:
+            $ref: '#/components/schemas/ArchiveDay'
+          description: 范围内已发布的日期，按日期升序；不按 linkId 筛选目录，客户端需筛选分片内容。
+        daily:
+          type: array
+          items:
+            $ref: '#/components/schemas/DailyStat'
+          description: 仅含仍从 D1 读取且存在访问的日期，按日期升序。
+        countries:
+          type: array
+          items:
+            $ref: '#/components/schemas/Breakdown'
+          description: 仅 D1 部分的分组，按 count 降序。
+        referers:
+          type: array
+          items:
+            $ref: '#/components/schemas/Breakdown'
+          description: 仅 D1 部分的分组，按 count 降序。
+        browsers:
+          type: array
+          items:
+            $ref: '#/components/schemas/Breakdown'
+          description: 仅 D1 部分的分组，按 count 降序。
+        devices:
+          type: array
+          items:
+            $ref: '#/components/schemas/Breakdown'
+          description: 仅 D1 部分的分组，按 count 降序。
+    Maintenance:
+      type: object
+      required:
+        - last_run_at
+        - last_success_at
+        - last_action
+        - last_error
+      properties:
+        last_run_at:
+          $ref: '#/components/schemas/NullableTimestamp'
+        last_success_at:
+          $ref: '#/components/schemas/NullableTimestamp'
+        last_action:
+          type:
+            - string
+            - 'null'
+          description: 例如 idle、uploaded:日期:分片:条数、published:日期。
+        last_error:
+          type:
+            - string
+            - 'null'
+          description: 最近失败信息；成功处理后清空。
+    SystemStatus:
+      type: object
+      required:
+        - mode
+        - retentionDays
+        - archiveBatchSize
+        - archiveMaxKb
+        - hotDays
+        - today
+        - earliestDay
+        - maintenance
+        - backlog
+      properties:
+        mode:
+          type: string
+          enum:
+            - economy
+            - detailed
+        retentionDays:
+          type: integer
+          minimum: 15
+          maximum: 36500
+          description: 当前配置；含今天的 UTC 日期数。
+        archiveBatchSize:
+          type: integer
+          minimum: 1
+          maximum: 500
+        archiveMaxKb:
+          type: integer
+          minimum: 16
+          maximum: 16384
+          description: 当前未压缩分片大小上限，单位 KB；1 KB = 1024 字节。
+        hotDays:
+          type: integer
+          const: 14
+        today:
+          $ref: '#/components/schemas/UtcDay'
+        earliestDay:
+          $ref: '#/components/schemas/UtcDay'
+        maintenance:
+          $ref: '#/components/schemas/Maintenance'
+        backlog:
+          type: integer
+          minimum: 0
+          description: 早于热数据边界、且归档尚未发布的记录数。

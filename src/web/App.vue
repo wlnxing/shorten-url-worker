@@ -416,11 +416,12 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div v-if="!ready" class="boot">正在打开折径…</div>
+  <div v-if="!ready" class="boot">正在打开 shorten url…</div>
   <main v-else-if="!loggedIn" class="login-layout">
     <section class="login-story">
       <div class="brand light">
-        <span class="brand-mark">↗</span><span>折径<span class="brand-en">SHORTLINK</span></span>
+        <span class="brand-mark">↗</span
+        ><span>shorten url<span class="brand-en">SHORTLINK</span></span>
       </div>
       <div>
         <span class="eyebrow">LESS DISTANCE. MORE CONNECTION.</span>
@@ -459,7 +460,7 @@ onBeforeUnmount(() => {
     <aside class="sidebar">
       <a href="/admin/" class="brand"
         ><span class="brand-mark">↗</span
-        ><span>折径<span class="brand-en">SHORTLINK</span></span></a
+        ><span>shorten url<span class="brand-en">SHORTLINK</span></span></a
       >
       <span class="nav-label">工作空间</span>
       <nav aria-label="主导航">
@@ -946,7 +947,7 @@ onBeforeUnmount(() => {
             </div>
           </section>
         </template>
-        <footer>折径 <span>·</span> KEEP YOUR LINKS SIMPLE</footer>
+        <footer>shorten url <span>·</span> KEEP YOUR LINKS SIMPLE</footer>
       </div>
     </main>
     <dialog ref="editDialog" class="edit-dialog" @cancel="!mutating || $event.preventDefault()">
