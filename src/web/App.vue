@@ -99,6 +99,8 @@ const detailDay = ref(today),
   eventPage = ref(1),
   hasMore = ref(false);
 const cursors = ref<(string | null)[]>([null]);
+const visitOpen = ref(false),
+  selectedVisit = ref<Visit | null>(null);
 const archiveRows = ref<ArchiveDay[]>([]),
   archivePage = ref(1),
   archivesBusy = ref(false);
@@ -151,6 +153,31 @@ const breakdowns = computed(() =>
       ]
     : [],
 );
+const visitFields = computed(() => {
+  const visit = selectedVisit.value;
+  if (!visit) return [];
+  return [
+    { label: '短链路径', value: `/s/${visit.slug}`, mono: true, wide: true },
+    { label: '访问时间（本地）', value: time(visit.occurred_at) },
+    { label: '时间戳（毫秒）', value: String(visit.occurred_at), mono: true },
+    { label: 'User-Agent（UA）', value: visit.ua || '未记录', mono: true, wide: true },
+    { label: '浏览器', value: visit.browser || '未知' },
+    { label: '设备类型', value: visit.device || '未知' },
+    { label: 'IP 地址', value: visit.ip || '未知', mono: true },
+    { label: '来源域名', value: visit.referer || '直接访问 / 未提供', mono: true },
+    { label: '国家 / 地区', value: visit.country || '未知' },
+    { label: '省 / 州', value: visit.region || '未知' },
+    { label: '城市', value: visit.city || '未知' },
+    { label: '记录 ID', value: String(visit.id), mono: true },
+    { label: '短链 ID', value: visit.link_id, mono: true, wide: true },
+    {
+      label: '访客标识（UV 去重）',
+      value: visit.visitor_key || '未生成',
+      mono: true,
+      wide: true,
+    },
+  ];
+});
 
 function report(e: unknown) {
   error.value = e instanceof Error ? e.message : '操作失败，请重试';
@@ -198,6 +225,8 @@ function endSession() {
   loggedIn.value = false;
   statsResult.value = null;
   events.value = [];
+  visitOpen.value = false;
+  selectedVisit.value = null;
   list.value = [];
   choices.value = [];
   archiveRows.value = [];
@@ -261,6 +290,7 @@ async function loadLinks(reset = false) {
 }
 async function navigate(next: typeof tab.value) {
   error.value = '';
+  visitOpen.value = false;
   if (next !== 'stats') {
     statsRequest++;
     detailRequest++;
@@ -434,6 +464,7 @@ async function loadStats() {
 }
 async function loadEvents(reset = false) {
   const request = ++detailRequest;
+  visitOpen.value = false;
   cancelJob('events');
   detailBusy.value = true;
   if (reset) {
@@ -1121,7 +1152,7 @@ onBeforeUnmount(() => {
               <div class="panel-toolbar">
                 <div>
                   <h2>访问明细</h2>
-                  <p class="panel-description">逐条查看访问时间、来源与设备</p>
+                  <p class="panel-description">逐条查看访问，点击详情可查看 UA 等完整记录</p>
                 </div>
                 <input
                   v-model="detailDay"
@@ -1145,6 +1176,7 @@ onBeforeUnmount(() => {
                       <th scope="col">IP / 地区</th>
                       <th scope="col">来源</th>
                       <th scope="col">浏览器 / 设备</th>
+                      <th scope="col" class="align-right">操作</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1163,6 +1195,18 @@ onBeforeUnmount(() => {
                       </td>
                       <td>
                         {{ event.browser }}<small class="cell-secondary">{{ event.device }}</small>
+                      </td>
+                      <td class="align-right nowrap">
+                        <Button
+                          type="link"
+                          size="small"
+                          :aria-label="`查看 /s/${event.slug} 的访问详情，记录 ${event.id}`"
+                          @click="
+                            selectedVisit = event;
+                            visitOpen = true;
+                          "
+                          >详情</Button
+                        >
                       </td>
                     </tr>
                   </tbody>
@@ -1383,6 +1427,29 @@ onBeforeUnmount(() => {
           </footer>
         </main>
       </div>
+      <Modal
+        v-model:open="visitOpen"
+        title="访问详情"
+        :width="680"
+        class="visit-dialog"
+        @after-close="selectedVisit = null"
+      >
+        <dl class="visit-fields">
+          <div
+            v-for="field in visitFields"
+            :key="field.label"
+            class="visit-field"
+            :class="{ 'visit-field-wide': field.wide }"
+          >
+            <dt>{{ field.label }}</dt>
+            <dd :class="{ mono: field.mono }">{{ field.value }}</dd>
+          </div>
+        </dl>
+        <p class="field-help">UA 展示已保存的内容，采集时最多保留 512 个字符。</p>
+        <template #footer>
+          <Button type="primary" @click="visitOpen = false">关闭</Button>
+        </template>
+      </Modal>
       <Modal
         v-model:open="editorOpen"
         :title="editingId ? '编辑短链' : '创建短链'"

@@ -1246,6 +1246,32 @@ select:disabled {
   margin: 6px 0 24px;
   color: var(--color-muted);
 }
+.visit-dialog .ant-modal-body {
+  max-height: 65vh;
+  overflow-y: auto;
+}
+.visit-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px 24px;
+  margin: 20px 0;
+}
+.visit-field {
+  min-width: 0;
+}
+.visit-field-wide {
+  grid-column: 1 / -1;
+}
+.visit-field dt {
+  margin-bottom: 4px;
+  color: var(--color-muted);
+  font-size: 12px;
+}
+.visit-field dd {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .editor-form fieldset {
   min-width: 0;
   padding: 0;
@@ -2232,6 +2258,10 @@ select:disabled {
   }
   .ant-modal .ant-modal-title {
     font-size: 18px;
+  }
+  .visit-fields {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
   }
   .toast-message {
     top: 16px;
