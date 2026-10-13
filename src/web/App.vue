@@ -158,6 +158,8 @@ const visitFields = computed(() => {
   if (!visit) return [];
   return [
     { label: '短链路径', value: `/s/${visit.slug}`, mono: true, wide: true },
+    { label: '访问域名', value: visit.hostname, mono: true, wide: true },
+    { label: '额外查询参数（Query）', value: visit.query || '无', mono: true, wide: true },
     { label: '访问时间（本地）', value: time(visit.occurred_at) },
     { label: '时间戳（毫秒）', value: String(visit.occurred_at), mono: true },
     { label: 'User-Agent（UA）', value: visit.ua || '未记录', mono: true, wide: true },
@@ -1173,6 +1175,7 @@ onBeforeUnmount(() => {
                     <tr>
                       <th scope="col">访问时间</th>
                       <th scope="col">短链</th>
+                      <th scope="col">访问域名</th>
                       <th scope="col">IP / 地区</th>
                       <th scope="col">来源</th>
                       <th scope="col">浏览器 / 设备</th>
@@ -1183,6 +1186,9 @@ onBeforeUnmount(() => {
                     <tr v-for="event in events" :key="event.id">
                       <td class="nowrap">{{ time(event.occurred_at) }}</td>
                       <td class="mono">/s/{{ event.slug }}</td>
+                      <td class="event-hostname mono" :title="event.hostname">
+                        {{ event.hostname }}
+                      </td>
                       <td>
                         <span class="mono">{{ event.ip || '未知' }}</span
                         ><small class="cell-secondary">{{

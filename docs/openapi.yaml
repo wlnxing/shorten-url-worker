@@ -618,7 +618,7 @@ paths:
         - 跳转
       operationId: redirectShortLink
       summary: 访问短链
-      description: 详细模式异步记录一次访问，包括缓存命中；经济模式不记录。目标查询参数保留，短链请求的查询参数不追加。
+      description: 详细模式异步记录一次访问及短链请求的原始 query，包括缓存命中；经济模式不记录。保留目标查询参数，再追加短链请求的 query；同名参数均保留，保持顺序、重复项和原始编码，目标片段保留在最后。
       security: []
       responses:
         '302':
@@ -745,7 +745,7 @@ components:
         type: string
         const: no-store
     Location:
-      description: 规范化后的目标网址；不追加短链请求的查询参数。
+      description: 规范化后的目标网址，并追加短链请求的原始 query；保留目标原有参数、同名参数、重复项、编码和片段。
       schema:
         type: string
         format: uri
@@ -1088,6 +1088,8 @@ components:
         - id
         - link_id
         - slug
+        - hostname
+        - query
         - occurred_at
         - ip
         - country
@@ -1111,6 +1113,16 @@ components:
           $ref: '#/components/schemas/Slug'
         occurred_at:
           $ref: '#/components/schemas/Timestamp'
+        hostname:
+          type: string
+          description: 访问发生时请求 URL 的主机名，不含协议和端口；与来源 referer 不同。必填且不可为 null，近期明细和归档均保留。
+          examples:
+            - short.example.com
+        query:
+          type: string
+          description: 短链请求附带的原始查询字符串，不含开头的 ?，保留顺序、重复项和编码；不包含目标网址预设参数，无参数时为空字符串。必填且不可为 null，近期明细和归档均保留。
+          examples:
+            - utm_source=newsletter&tag=a&tag=b
         ip:
           type: string
           description: 原始访问 IP；缺失时为空。

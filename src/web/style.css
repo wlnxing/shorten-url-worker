@@ -1145,6 +1145,7 @@ select:disabled {
   color: var(--color-muted);
   font-size: 10px;
 }
+.event-hostname,
 .event-referer {
   max-width: 180px;
 }

@@ -74,6 +74,13 @@ export async function redirect(c: Context<AppEnv>) {
       }),
     );
   }
-  c.header('Location', mapping.link.target);
+  let target = mapping.link.target;
+  if (url.search) {
+    const destination = new URL(target);
+    // Append the raw query so encoding, repeated keys and the target fragment survive.
+    destination.search += `${destination.search ? '&' : ''}${url.search.slice(1)}`;
+    target = destination.href;
+  }
+  c.header('Location', target);
   return c.body(null, 302);
 }

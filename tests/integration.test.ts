@@ -4,6 +4,7 @@ import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { readFile } from 'node:fs/promises';
 import { gunzipSync } from 'node:zlib';
 import { createHmac } from 'node:crypto';
+import type { Visit } from '../src/shared/types';
 
 const ORIGIN = 'https://short.example';
 const DAY = 86400000;
@@ -139,10 +140,13 @@ async function call(
     redirect: 'manual',
   });
 }
-async function create(slug = `test-${crypto.randomUUID()}`) {
+async function create(
+  slug = `test-${crypto.randomUUID()}`,
+  target = 'https://example.org/path?kept=1',
+) {
   const res = await call('/api/admin/links', 'POST', {
     slug,
-    target: 'https://example.org/path?kept=1',
+    target,
     title: 'Test',
   });
   expect(res.status).toBe(201);
@@ -152,8 +156,8 @@ async function seed(count: number, at = start - 15 * DAY + 1000, id = 'historic-
   await db
     .prepare(
       `WITH RECURSIVE seq(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM seq WHERE x < ?)
-    INSERT INTO events(link_id, slug, occurred_at, ip, country, region, city, referer, ua, browser, device, visitor_key)
-    SELECT ?, 'campaign/summer', ? + x, '192.0.2.' || (x % 7), 'CN', 'Shanghai', 'Shanghai', 'example.org', 'Mozilla/5.0 Chrome/130.0 Mobile', 'Chrome', '手机', 'visitor-' || (x % 7) FROM seq`,
+    INSERT INTO events(link_id, slug, hostname, query, occurred_at, ip, country, region, city, referer, ua, browser, device, visitor_key)
+    SELECT ?, 'campaign/summer', 'short.example', '', ? + x, '192.0.2.' || (x % 7), 'CN', 'Shanghai', 'Shanghai', 'example.org', 'Mozilla/5.0 Chrome/130.0 Mobile', 'Chrome', '手机', 'visitor-' || (x % 7) FROM seq`,
     )
     .bind(count, id, at)
     .run();
@@ -280,21 +284,57 @@ describe('authentication and link management', () => {
 });
 
 describe('redirect modes and cache', () => {
-  it('performs zero storage calls on an economy cache hit and never forwards request parameters', async () => {
+  it('performs zero storage calls on an economy cache hit while forwarding request queries', async () => {
     const link = await create();
-    const cold = await call(`/s/${link.slug}`);
+    const cold = await call(`/s/${link.slug}?campaign=first`);
     expect(cold.headers.get('x-test-db-calls')).toBe('1');
+    expect(cold.headers.get('Location')).toBe(`${link.target}&campaign=first`);
     const hit = await call(`/s/${link.slug}?injected=2`, 'GET', undefined, {
       'X-Test-Fault': 'read-db',
     });
     expect(hit.status).toBe(302);
-    expect(hit.headers.get('Location')).toBe(link.target);
+    expect(hit.headers.get('Location')).toBe(`${link.target}&injected=2`);
     expect(hit.headers.get('x-test-db-calls')).toBe('0');
     expect(hit.headers.get('Cache-Control')).toBe('no-store');
     expect((await db.prepare('SELECT COUNT(*) AS n FROM events').first<{ n: number }>())!.n).toBe(
       0,
     );
   });
+  const rawQuery = 'tag=one&tag=two&name=a%20b&plus=a+b&slash=%2f&flag&empty=';
+  it.each([
+    { target: 'https://example.org/path', expected: `https://example.org/path?${rawQuery}` },
+    {
+      target: 'https://example.org/path#details',
+      expected: `https://example.org/path?${rawQuery}#details`,
+    },
+    {
+      target: 'https://example.org/path?#details',
+      expected: `https://example.org/path?${rawQuery}#details`,
+    },
+    {
+      target: 'https://example.org/path?tag=target&kept=a%20b&slash=%2f#details',
+      expected: `https://example.org/path?tag=target&kept=a%20b&slash=%2f&${rawQuery}#details`,
+    },
+  ])(
+    'appends raw queries to $target for GET and HEAD in both modes',
+    async ({ target, expected }) => {
+      const link = await create(undefined, target);
+      for (const mode of ['economy', 'detailed']) {
+        for (const method of ['GET', 'HEAD']) {
+          const response = await call(`/s/${link.slug}?${rawQuery}`, method, undefined, {
+            'X-Test-Mode': mode,
+          });
+          expect(response.status).toBe(302);
+          expect(response.headers.get('Location')).toBe(expected);
+        }
+      }
+      const { results } = await db.prepare('SELECT query FROM events').all();
+      expect(results).toEqual([{ query: rawQuery }]);
+      const plain = await call(`/s/${link.slug}`, 'GET', undefined, { 'X-Test-Fault': 'read-db' });
+      expect(plain.headers.get('Location')).toBe(target);
+      expect(plain.headers.get('x-test-db-calls')).toBe('0');
+    },
+  );
   it('records every detailed GET including cache hits, excludes HEAD, and counts daily UV', async () => {
     const link = await create();
     const headers = {
@@ -310,12 +350,90 @@ describe('redirect modes and cache', () => {
       await call(`/api/admin/stats?from=${today}&to=${today}`)
     ).json<{ daily: { pv: number; uv: number }[] }>();
     expect(stats.daily[0]).toMatchObject({ pv: 2, uv: 1 });
-    const event = await db.prepare('SELECT ip, referer FROM events LIMIT 1').first();
-    expect(event).toEqual({ ip: '192.0.2.8', referer: 'ref.example' });
+    const event = await db
+      .prepare('SELECT hostname, query, ip, referer FROM events LIMIT 1')
+      .first();
+    expect(event).toEqual({
+      hostname: 'short.example',
+      query: '',
+      ip: '192.0.2.8',
+      referer: 'ref.example',
+    });
     await call(`/s/${link.slug}`, 'GET');
     expect((await db.prepare('SELECT COUNT(*) AS n FROM events').first<{ n: number }>())!.n).toBe(
       2,
     );
+  });
+  it('preserves each request hostname and query across cache hits, event queries and archiving', async () => {
+    const link = await create(`domains/${crypto.randomUUID()}`);
+    const hosts = [
+      { origin: ORIGIN, hostname: 'short.example' },
+      { origin: 'https://Another.example:8443', hostname: 'another.example' },
+    ];
+    for (const { origin } of hosts) {
+      for (let visit = 0; visit < 2; visit++) {
+        const query = `campaign=summer&visit=${visit}&${rawQuery}`;
+        const res = await mf.dispatchFetch(`${origin}/s/${link.slug}?${query}`, {
+          headers: {
+            'X-Test-Mode': 'detailed',
+            'CF-Connecting-IP': '192.0.2.9',
+            Referer: 'https://ref.example/page',
+            'X-Forwarded-Host': 'forwarded.example',
+            Forwarded: 'host=forwarded.example',
+          },
+          redirect: 'manual',
+        });
+        expect(res.status).toBe(302);
+        expect(res.headers.get('Location')).toBe(`${link.target}&${query}`);
+        expect(res.headers.get('x-test-db-calls')).toBe(visit === 0 ? '2' : '1');
+      }
+    }
+    const response = await call(`/api/admin/stats/events?day=${today}&linkId=${link.id}`);
+    expect(response.status).toBe(200);
+    const { items } = await response.json<{ items: Visit[] }>();
+    expect(items).toHaveLength(4);
+    for (const { hostname } of hosts) {
+      const matches = items.filter((event) => event.hostname === hostname);
+      expect(matches).toHaveLength(2);
+      expect(matches.map((event) => event.query).sort()).toEqual([
+        `campaign=summer&visit=0&${rawQuery}`,
+        `campaign=summer&visit=1&${rawQuery}`,
+      ]);
+      expect(
+        matches.every((event) => event.slug === link.slug && event.referer === 'ref.example'),
+      ).toBe(true);
+    }
+
+    await db
+      .prepare('UPDATE events SET occurred_at = ? + id')
+      .bind(start - 15 * DAY)
+      .run();
+    await drain();
+    const archived = await call(`/api/admin/archives/${oldDay}/parts/0`);
+    expect(archived.status).toBe(200);
+    const rows: Visit[] = gunzipSync(Buffer.from(await archived.arrayBuffer()))
+      .toString()
+      .trim()
+      .split('\n')
+      .slice(1)
+      .map((line) => JSON.parse(line));
+    expect(rows.map(({ id, hostname, query }) => ({ id, hostname, query }))).toEqual(
+      [...items].reverse().map(({ id, hostname, query }) => ({ id, hostname, query })),
+    );
+  });
+  it('rejects null and omitted hostnames when persisting visits', async () => {
+    await seed(1);
+    await expect(db.prepare('UPDATE events SET hostname = NULL').run()).rejects.toThrow(
+      'NOT NULL constraint failed: events.hostname',
+    );
+    await expect(
+      db
+        .prepare(
+          `INSERT INTO events(link_id, slug, query, occurred_at, ip, country, region, city, referer, ua, browser, device, visitor_key)
+        SELECT link_id, slug, query, occurred_at, ip, country, region, city, referer, ua, browser, device, visitor_key FROM events`,
+        )
+        .run(),
+    ).rejects.toThrow('NOT NULL constraint failed: events.hostname');
   });
   it('continues redirects on statistics failure, but reports a cold D1 outage', async () => {
     const link = await create();

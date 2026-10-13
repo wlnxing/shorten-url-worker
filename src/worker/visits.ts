@@ -26,6 +26,7 @@ export async function recordVisit(
   link: Pick<Link, 'id' | 'slug'>,
   occurredAt = Date.now(),
 ) {
+  const url = new URL(request.url);
   const ua = (request.headers.get('User-Agent') ?? '').slice(0, 512);
   const ip = (request.headers.get('CF-Connecting-IP') ?? '').slice(0, 45);
   let referer = '';
@@ -48,12 +49,14 @@ export async function recordVisit(
       ).join('')
     : null;
   await env.DB.prepare(
-    `INSERT INTO events(link_id, slug, occurred_at, ip, country, region, city, referer, ua, browser, device, visitor_key)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO events(link_id, slug, hostname, query, occurred_at, ip, country, region, city, referer, ua, browser, device, visitor_key)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
     .bind(
       link.id,
       link.slug,
+      url.hostname,
+      url.search.slice(1),
       occurredAt,
       ip,
       country,

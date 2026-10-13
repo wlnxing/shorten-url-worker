@@ -3,7 +3,7 @@ import { config, DAY, dayOf, dayStart, earliestDay, hotCutoff, type Env } from '
 
 const encoder = new TextEncoder();
 const EVENT_COLUMNS =
-  'id, link_id, slug, occurred_at, ip, country, region, city, referer, ua, browser, device, visitor_key';
+  'id, link_id, slug, hostname, query, occurred_at, ip, country, region, city, referer, ua, browser, device, visitor_key';
 const guard = 'EXISTS (SELECT 1 FROM maintenance WHERE id = 1 AND token = ? AND locked_until > ?)';
 function owned(token: string) {
   return [token, Date.now()];

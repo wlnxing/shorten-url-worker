@@ -13,6 +13,8 @@ export interface Visit {
   id: number;
   link_id: string;
   slug: string;
+  hostname: string;
+  query: string;
   occurred_at: number;
   ip: string;
   country: string;

@@ -16,6 +16,8 @@ CREATE TABLE events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   link_id TEXT NOT NULL,
   slug TEXT NOT NULL,
+  hostname TEXT NOT NULL,
+  query TEXT NOT NULL,
   occurred_at INTEGER NOT NULL,
   ip TEXT NOT NULL,
   country TEXT NOT NULL,
